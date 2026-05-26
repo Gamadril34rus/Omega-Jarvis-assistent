@@ -37,10 +37,10 @@ async def main():
     logger.info("[Main] WorkerPool started with 3 workers.")
 
     bot_task = asyncio.create_task(
-        start_bot(brain, pool=pool), name="telegram-bot"
+        start_bot(brain, pool=pool, notifier=notifier), name="telegram-bot"
     )
     server_task = asyncio.create_task(
-        start_server(brain, pool=pool), name="tma-server"
+        start_server(brain, pool=pool, notifier=notifier), name="tma-server"
     )
 
     logger.info("[Main] All services running: bot + TMA server + 3 workers + notifier.")

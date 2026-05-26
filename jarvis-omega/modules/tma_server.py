@@ -25,7 +25,7 @@ class TaskRequest(BaseModel):
     metadata: dict = {}
 
 
-def create_app(brain, pool=None) -> FastAPI:
+def create_app(brain, pool=None, notifier=None) -> FastAPI:
     app = FastAPI(title="Jarvis-Omega TMA API", version="1.0.0")
 
     if STATIC_DIR.exists():
@@ -105,6 +105,16 @@ def create_app(brain, pool=None) -> FastAPI:
         else:
             raise HTTPException(status_code=400, detail=f"Unknown command: {cmd}")
 
+    @app.get("/api/alerts")
+    async def get_alerts():
+        if notifier is None:
+            return JSONResponse({"alerts": []})
+        try:
+            return JSONResponse({"alerts": notifier.get_history_dicts()})
+        except Exception as e:
+            logger.error(f"[TMA] Error fetching alerts: {e}")
+            raise HTTPException(status_code=500, detail="Failed to fetch alerts")
+
     @app.get("/health")
     async def health():
         return {"status": "healthy"}
@@ -112,11 +122,11 @@ def create_app(brain, pool=None) -> FastAPI:
     return app
 
 
-async def start_server(brain, pool=None):
-    app = create_app(brain, pool=pool)
+async def start_server(brain, pool=None, notifier=None):
     host = os.getenv("TMA_SERVER_HOST", "0.0.0.0")
     port = int(os.getenv("TMA_SERVER_PORT", "8000"))
 
+    app = create_app(brain, pool=pool, notifier=notifier)
     config = uvicorn.Config(app=app, host=host, port=port, log_level="info")
     server = uvicorn.Server(config)
     logger.info(f"[TMA] Starting FastAPI server on {host}:{port}")

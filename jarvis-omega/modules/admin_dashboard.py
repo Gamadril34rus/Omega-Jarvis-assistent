@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -7,7 +8,7 @@ from aiogram.types import Message
 logger = logging.getLogger("jarvis.admin")
 
 
-def create_admin_router(brain, pool=None):
+def create_admin_router(brain, pool=None, notifier=None):
     from aiogram import Router
 
     router = Router()
@@ -27,7 +28,8 @@ def create_admin_router(brain, pool=None):
             "/status — system metrics\n"
             "/pause  — pause workers\n"
             "/resume — resume workers\n"
-            "/queue  — queue size"
+            "/queue  — queue size\n"
+            "/alerts — recent alerts"
         )
 
     @router.message(Command("status"))
@@ -83,10 +85,35 @@ def create_admin_router(brain, pool=None):
         size = pool.queue_size if pool else 0
         await message.answer(f"Queue size: {size} pending tasks.")
 
+    @router.message(Command("alerts"))
+    async def cmd_alerts(message: Message):
+        if not is_admin(message):
+            await message.answer("Access denied.")
+            return
+        if not notifier:
+            await message.answer("Notifier not available.")
+            return
+        history = notifier.get_history()
+        if not history:
+            await message.answer("No alerts sent yet.")
+            return
+        lines = [f"Recent Alerts ({len(history)}):"]
+        for record in history:
+            dt = time.strftime("%d.%m %H:%M:%S", time.localtime(record.ts))
+            first_line = record.text.split("\n")[0]
+            clean = (
+                first_line
+                .replace("<b>", "").replace("</b>", "")
+                .replace("<code>", "").replace("</code>", "")
+                .replace("<i>", "").replace("</i>", "")
+            )
+            lines.append(f"[{dt}] {clean}")
+        await message.answer("\n".join(lines))
+
     return router
 
 
-async def start_bot(brain, pool=None):
+async def start_bot(brain, pool=None, notifier=None):
     from aiogram import Bot, Dispatcher
 
     token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -95,7 +122,7 @@ async def start_bot(brain, pool=None):
 
     bot = Bot(token=token)
     dp = Dispatcher()
-    dp.include_router(create_admin_router(brain, pool=pool))
+    dp.include_router(create_admin_router(brain, pool=pool, notifier=notifier))
 
     logger.info("[Admin] Starting Telegram bot polling...")
     await dp.start_polling(bot)
