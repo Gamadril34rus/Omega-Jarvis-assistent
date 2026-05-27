@@ -2,12 +2,13 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Устанавливаем библиотеки напрямую
+# Устанавливаем библиотеки
 RUN pip install --no-cache-dir fastapi uvicorn aiogram python-dotenv httpx
 
-# Копируем всё содержимое папки jarvis-omega прямо в рабочую директорию /app
+# Копируем код проекта
 COPY jarvis-omega/ .
 
-# Теперь main.py окажется точно там, где нужно, и запустится без ошибок
-CMD ["python", "main.py"]
+# ХАК: Копируем секретный файл .env из папки Render прямо в корень приложения
+RUN cp /etc/secrets/.env ./.env 2>/dev/null || true
 
+CMD ["python", "main.py"]
