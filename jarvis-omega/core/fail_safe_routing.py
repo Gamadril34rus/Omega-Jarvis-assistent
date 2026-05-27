@@ -2,7 +2,6 @@ import asyncio
 import logging
 import os
 import random
-import time
 from enum import Enum
 
 import httpx
@@ -11,19 +10,21 @@ logger = logging.getLogger("jarvis.router")
 
 
 class Provider(str, Enum):
+    GROQ = "groq"
     GEMINI = "gemini"
-    OPENAI = "openai"
+    DEEPSEEK = "deepseek"
     ZHIPU = "zhipu"
+    SILICONFLOW = "siliconflow"
     OPENROUTER = "openrouter"
-    OLLAMA = "ollama"
 
 
 CASCADE_ORDER = [
+    Provider.GROQ,
     Provider.GEMINI,
-    Provider.OPENAI,
+    Provider.DEEPSEEK,
     Provider.ZHIPU,
+    Provider.SILICONFLOW,
     Provider.OPENROUTER,
-    Provider.OLLAMA,
 ]
 
 JITTER_MIN_SEC = 15
@@ -33,30 +34,39 @@ JITTER_MAX_SEC = 45
 class ProviderConfig:
     def __init__(self):
         self.configs = {
+            Provider.GROQ: {
+                "api_key": os.getenv("GROQ_API_KEY", ""),
+                "base_url": "https://api.groq.com/openai/v1",
+                "model": "llama-3.3-70b-versatile",
+            },
             Provider.GEMINI: {
                 "api_key": os.getenv("GEMINI_API_KEY", ""),
                 "base_url": "https://generativelanguage.googleapis.com/v1",
-                "model": "Gemini 2.5 Flash",
+                # Системное имя для Google API (строчные буквы, дефисы)
+                "model": "gemini-2.5-flash-lite",
             },
-            Provider.OPENAI: {
-                "api_key": os.getenv("OPENAI_API_KEY", ""),
-                "base_url": "https://api.openai.com/v1",
-                "model": "gpt-4o-mini",
+            Provider.DEEPSEEK: {
+                "api_key": os.getenv("DEEPSEEK_API_KEY", ""),
+                "base_url": "https://api.deepseek.com",
+                "model": "deepseek-chat",
             },
             Provider.ZHIPU: {
                 "api_key": os.getenv("ZHIPU_API_KEY", ""),
                 "base_url": "https://open.bigmodel.cn/api/paas/v4",
-                "model": "glm-4-flash",
+                # Системное имя для Zhipu
+                "model": "glm-4.7-flash",
+            },
+            Provider.SILICONFLOW: {
+                "api_key": os.getenv("SILICONFLOW_API_KEY", ""),
+                "base_url": "https://api.siliconflow.cn/v1",
+                # В SiliconFlow часто требуется указывать вендора. 
+                # Если будет выдавать ошибку 404, замени на "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+                "model": "DeepSeek-R1-Qwen-7B",
             },
             Provider.OPENROUTER: {
                 "api_key": os.getenv("OPENROUTER_API_KEY", ""),
                 "base_url": "https://openrouter.ai/api/v1",
                 "model": "meta-llama/llama-3.1-8b-instruct:free",
-            },
-            Provider.OLLAMA: {
-                "api_key": "ollama",
-                "base_url": os.getenv("OLLAMA_BASE_URL", "http://localhost:11434") + "/v1",
-                "model": "llama3.2",
             },
         }
 
@@ -102,7 +112,8 @@ class FailSafeRouter:
 
     async def _call_provider(self, provider: Provider, messages: list[dict], **kwargs) -> str:
         cfg = self._config.get(provider)
-        if not cfg["api_key"] and provider != Provider.OLLAMA:
+        
+        if not cfg["api_key"]:
             raise ProviderError(f"No API key configured for {provider.value}")
 
         if provider == Provider.GEMINI:
