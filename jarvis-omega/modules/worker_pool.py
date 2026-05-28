@@ -6,8 +6,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from enum import Enum
 
-# Импорт плагина
+# Правильные относительные импорты без префикса jarvis_omega
 from modules.plugins.advego_job_hunter import AdvegoJobHunter
+# Если у тебя используется CPAContentFactory, импортируем её правильно:
+# from modules.plugins.cpa_factory import CPAContentFactory
 
 logger = logging.getLogger("jarvis.modules.worker_pool")
 
@@ -25,7 +27,7 @@ class Task:
     prompt: str
     task_type: TaskType = TaskType.LLM_CHAT
     metadata: dict = field(default_factory=dict)
-    created_at: float = field(default_factory=time.time)  # Исправлено здесь
+    created_at: float = field(default_factory=time.time)  # Исправлено: default_factory вместо прямого вызова
 
 class WorkerPool:
     def __init__(self, router, brain, notifier=None, num_workers: int = 3):
@@ -60,11 +62,11 @@ class WorkerPool:
         await self._queue.put(task)
 
     async def _autonomous_scheduler(self):
-        """ Внутренний цикл автоматической постановки задач """
+        """ Автономный цикл планировщика """
         await asyncio.sleep(15)
         while not self._shutdown:
             try:
-                # Поиск работы на Advego (раз в 30 минут)
+                # Постановка задачи на Advego раз в 30 минут
                 await self.add_task(
                     prompt="Сканирование ленты Advego на наличие доступных заказов.",
                     task_type=TaskType.HUNT_JOBS
@@ -123,6 +125,15 @@ class WorkerPool:
                 elapsed=elapsed,
                 metadata=task.metadata
             )
+
+            if self._notifier and revenue_usd > 0:
+                await self._notifier.send_alert(
+                    f"💰 <b>Jarvis заработал деньги!</b>\n"
+                    f"Действие: <code>{action_details}</code>\n"
+                    f"Результат: {response}\n"
+                    f"Профит: <code>${revenue_usd:.2f}</code>",
+                    dedup_key="revenue_alert"
+                )
 
         except Exception as e:
             logger.error(f"Task execution failed: {e}")
