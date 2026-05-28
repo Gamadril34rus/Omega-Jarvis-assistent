@@ -34,10 +34,8 @@ class AdvegoJobHunter:
             return "Ошибка: куки авторизации Advego не настроены.", 0.0
 
         async with async_playwright() as p:
-            user_agents = [
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-            ]
+            # Маскируемся строго под мобильный Android-браузер Kiwi, из которого брались куки
+            kiwi_user_agent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
             
             browser = await p.chromium.launch(
                 headless=True,
@@ -50,9 +48,12 @@ class AdvegoJobHunter:
                 ]
             )
             
+            # Настройки контекста эмулируют мобильный экран, чтобы верстка совпала с Kiwi
             context = await browser.new_context(
-                user_agent=random.choice(user_agents),
-                viewport={"width": 1366, "height": 768},
+                user_agent=kiwi_user_agent,
+                viewport={"width": 390, "height": 844},
+                is_mobile=True,
+                has_touch=True,
                 locale="ru-RU",
                 timezone_id="Europe/Moscow"
             )
@@ -82,14 +83,13 @@ class AdvegoJobHunter:
             # Скрываем автоматизацию
             await page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                window.chrome = { runtime: {} };
             """)
 
             try:
-                # 1. Прыгаем в ленту заказов
+                # 1. Сразу прыгаем в ленту заказов
                 logger.info("[Advego] Переход в ленту заказов напрямую через готовую сессию...")
                 await page.goto("https://advego.com/job/find/", wait_until="networkidle", timeout=30000)
-                await asyncio.sleep(random.uniform(2.0, 4.0))
+                await asyncio.sleep(random.uniform(3.0, 5.0))
 
                 # Проверяем, не выкинуло ли нас на авторизацию/Cloudflare
                 current_html = await page.content()
@@ -107,12 +107,11 @@ class AdvegoJobHunter:
                     await browser.close()
                     return "Заблокировано Cloudflare при переходе в ленту.", 0.0
 
-                # 2. Успешный вход в ленту
-                logger.info("[Advego] Успешный вход в закрытую зону выполнен!")
+                # 2. Фиксируем успешный вход в ленту
+                logger.info("[Advego] Успешный вход в скрытую зону выполнен!")
                 await self._safe_screenshot(page, "advego_jobs_feed_success.png")
                 
-                # Твой парсер элементов (находим новые заказы, если есть)
-                # Переменная под доход в рублях
+                # Фиксируем доход в рублях
                 revenue_rub = 0.0 
                 
                 logger.info("[Advego] Сканирование ленты успешно завершено.")
