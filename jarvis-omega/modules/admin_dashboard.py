@@ -38,8 +38,18 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
         if not is_admin(message):
             await message.answer("Access denied.")
             return
+        
         metrics = await brain.get_metrics()
-        queue_info = f"\nQueue size: {pool.queue_size}" if pool else ""
+        
+        # Безопасное получение размера очереди
+        q_size = "N/A"
+        if pool:
+            if hasattr(pool, 'queue') and hasattr(pool.queue, 'qsize'):
+                q_size = pool.queue.qsize()
+            elif hasattr(pool, '_queue') and hasattr(pool._queue, 'qsize'):
+                q_size = pool._queue.qsize()
+
+        queue_info = f"\nQueue size: {q_size}" if pool else ""
         text = (
             f"System Status\n"
             f"Uptime: {metrics['uptime_seconds']}s\n"
@@ -112,8 +122,15 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
         if not is_admin(message):
             await message.answer("Access denied.")
             return
-        size = pool.queue_size if pool else 0
-        await message.answer(f"Queue size: {size} pending tasks.")
+        
+        q_size = 0
+        if pool:
+            if hasattr(pool, 'queue') and hasattr(pool.queue, 'qsize'):
+                q_size = pool.queue.qsize()
+            elif hasattr(pool, '_queue') and hasattr(pool._queue, 'qsize'):
+                q_size = pool._queue.qsize()
+                
+        await message.answer(f"Queue size: {q_size} pending tasks.")
 
     @router.message(Command("alerts"))
     async def cmd_alerts(message: Message):
@@ -139,25 +156,6 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
             )
             lines.append(f"[{dt}] {clean}")
         await message.answer("\n".join(lines))
-
-    # --- ТЕСТОВЫЙ ФОЛБЕК-ХЭНДЛЕР ДЛЯ ДИАГНОСТИКИ ID ---
-    @router.message()
-    async def fallback_debug(message: Message):
-        user_id = message.from_user.id if message.from_user else "Unknown"
-        username = message.from_user.username if message.from_user else "No Username"
-        env_admin_id = os.getenv("TELEGRAM_ADMIN_ID", "NOT_SET")
-        
-        logger.warning(
-            f"\n"
-            f"⚠️ --- [DEBUG ХЭНДЛЕР] ---\n"
-            f"Пришёл неотработанный апдейт от пользователя!\n"
-            f"Имя в ТГ: @{username}\n"
-            f"Его реальный ID: {user_id}\n"
-            f"В Render зашит TELEGRAM_ADMIN_ID: {env_admin_id}\n"
-            f"Совпадение (строковое): {str(user_id) == str(env_admin_id).strip()}\n"
-            f"Текст сообщения: {message.text}\n"
-            f"------------------------"
-        )
 
     return router
 
