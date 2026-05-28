@@ -7,7 +7,7 @@ logger = logging.getLogger("jarvis.plugins.advego_jobs")
 class AdvegoJobHunter:
     def __init__(self, router):
         self._router = router
-        # Твои данные из профиля
+        # Данные авторизации
         self._login = "zmey1341@mail.ru"
         self._password = "Samsung777+"
 
@@ -36,12 +36,21 @@ class AdvegoJobHunter:
                 logger.info("Переход на страницу авторизации Advego...")
                 # 1. Авторизация
                 await page.goto("https://advego.com/login/", timeout=60000)
-                await page.fill('input[name="email"]', self._login)
-                await page.fill('input[name="password"]', self._password)
-                await page.click('button[type="submit"]')
                 
-                # Небольшая пауза для завершения перенаправления после логина
-                await asyncio.sleep(5) 
+                # Добавляем :visible, чтобы Playwright не цеплял скрытую форму регистрации
+                await page.fill('input[name="email"]:visible', self._login)
+                await page.fill('input[name="password"]:visible', self._password)
+                
+                # Кликаем именно по видимой кнопке отправки
+                await page.click('button[type="submit"]:visible')
+                
+                logger.info("Ожидание завершения авторизации...")
+                # Вместо жесткого sleep(5) надежнее подождать, пока сменится URL или закроется форма
+                try:
+                    await page.wait_for_url("https://advego.com/", timeout=15000)
+                except Exception:
+                    # Если редиректнуло в другое место или остался старый URL, делаем паузу как запасной вариант
+                    await asyncio.sleep(5) 
 
                 logger.info("Переход на страницу поиска заказов...")
                 # 2. Поиск доступных заказов (Копирайтинг и Рерайт)
