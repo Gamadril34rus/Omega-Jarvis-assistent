@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import html  # Добавили для безопасного экранирования HTML-разметки
 
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -110,23 +111,47 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
         
         if not task:
             await message.answer(
-                "🤖 **Режим саморазвития Джарвиса**\n\n"
+                "🤖 <b>Режим саморазвития Джарвиса</b>\n\n"
                 "Напиши мне, какую функцию или плагин разработать. Пример:\n"
-                "`/develop Сделай парсер, который запрашивает курс TON к USD и возвращает текст`"
+                "<code>/develop Сделай парсер, который запрашивает курс TON к USD</code>",
+                parse_mode="HTML"
             )
             return
 
         await message.answer(
-            "🧠 *Джарвис ушел в подсознание...*\n"
-            "Анализирую архитектуру, пишу тестовый код и проверяю его безопасность. Подожди немного..."
+            "🧠 <i>Джарвис ушел в подсознание...</i>\n"
+            "Анализирую архитектуру, пишу тестовый код и проверяю его безопасность. Подожди немного...",
+            parse_mode="HTML"
         )
         
         try:
             result = await jarvis_mind.self_develop(task)
-            await message.answer(result, parse_mode="Markdown")
+            
+            # --- Защита от кривой разметки Телеграма ---
+            # Переводим вывод на HTML. Если внутри ответа есть блоки кода, 
+            # оборачиваем их красиво, а остальной текст безопасно экранируем.
+            if "```python" in result:
+                parts = result.split("```python")
+                intro = html.escape(parts[0].strip())
+                code_and_rest = parts[1].split("```")
+                code_block = html.escape(code_and_rest[0].strip())
+                outro = html.escape(code_and_rest[1].strip()) if len(code_and_rest) > 1 else ""
+                
+                formatted_text = f"{intro}\n\n<pre><code class='language-python'>{code_block}</code></pre>\n\n{outro}"
+            else:
+                # Если блоков кода нет (например, вернулась ошибка теста) — просто безопасно экранируем весь текст
+                formatted_text = html.escape(result)
+
+            try:
+                await message.answer(formatted_text, parse_mode="HTML")
+            except Exception as parse_err:
+                logger.warning(f"[Admin] HTML parse failed, falling back to raw text: {parse_err}")
+                # Если Телеграм всё равно ругается на HTML — отправляем как голый текст, без паники
+                await message.answer(f"🤖 Отчет (сырой текст):\n\n{result}", parse_mode=None)
+
         except Exception as e:
             logger.error(f"[Admin] Self-develop error: {e}")
-            await message.answer(f"❌ Ошибка в процессе генерации кода: {e}")
+            await message.answer(f"❌ Критическая ошибка в процессе генерации кода: {e}")
 
     @router.message(Command("pause"))
     async def cmd_pause(message: Message):
