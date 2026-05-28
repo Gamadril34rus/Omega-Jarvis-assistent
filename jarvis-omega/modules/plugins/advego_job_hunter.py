@@ -2,7 +2,6 @@ import asyncio
 import logging
 from pathlib import Path
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
 
 logger = logging.getLogger("jarvis.plugins.advego_jobs")
 
@@ -21,32 +20,31 @@ class AdvegoJobHunter:
             )
             page = await context.new_page()
             
-            # Применяем stealth, чтобы скрыть признаки автоматизации
-            await stealth_async(page)
+            # Вручную скрываем признаки автоматизации через CDP
+            await page.add_init_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
             try:
-                logger.info("Переход на Advego (stealth mode)...")
+                logger.info("Переход на Advego...")
                 await page.goto("https://advego.com/login/", wait_until="domcontentloaded")
-                await asyncio.sleep(3)
+                await asyncio.sleep(4)
 
-                # Ввод логина и пароля
+                # Ввод данных
                 await page.fill('input[name="login"]', self._login)
                 await page.fill('input[name="password"]', self._password)
                 
                 # Клик по кнопке входа
                 await page.click('button[type="submit"]')
-                await asyncio.sleep(7) 
+                await asyncio.sleep(8) 
                 
-                # Проверка авторизации по наличию специфических элементов профиля
-                if not await page.query_selector('.user-profile-menu, .header__user'):
+                # Проверка авторизации
+                if "login" in page.url:
                     await page.screenshot(path=str(self._static_dir / "advego_error.png"))
-                    raise Exception("Не удалось пройти авторизацию (возможно капча)")
+                    raise Exception("Не удалось авторизоваться")
 
                 logger.info("Авторизация успешна!")
                 await page.goto("https://advego.com/job/find/?job_type=1&job_type=2")
                 await asyncio.sleep(3)
                 
-                # Поиск заказа
                 job_items = await page.query_selector_all('.job_item')
                 if not job_items:
                     return "Заказов пока нет", 0.0
@@ -56,11 +54,10 @@ class AdvegoJobHunter:
                     await take_link.click()
                     return "Заказ успешно взят!", 150.0
                 
-                return "Заказы найдены, но их нельзя взять", 0.0
+                return "Заказы есть, но взять нельзя", 0.0
 
             except Exception as e:
                 logger.error(f"Ошибка Advego: {e}")
                 return f"Сбой: {str(e)}", 0.0
             finally:
-                await context.close()
                 await browser.close()
