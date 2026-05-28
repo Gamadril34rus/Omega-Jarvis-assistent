@@ -41,34 +41,32 @@ class AdvegoJobHunter:
                 # Ожидаем, пока прекратится активный сетевой обмен
                 await page.wait_for_load_state("networkidle")
                 
-                # Ждем появления формы авторизации
+                # Проверяем наличие основной формы авторизации
                 try:
-                    await page.wait_for_selector('form[action*="login"]', timeout=10000)
+                    await page.wait_for_selector('#host_login_form, form[action*="login"]', timeout=15000)
                 except Exception:
-                    logger.warning("[Advego] Форма входа не найдена по селектору формы. Проверяем вкладку 'Вход'...")
-                    login_tab = await page.query_selector('text="Вход"')
-                    if login_tab and await login_tab.is_visible():
-                        await login_tab.click()
-                        await asyncio.sleep(2)
+                    logger.warning("[Advego] Основная форма не найдена, пробуем принудительно открыть вкладку 'Вход'")
+                    # Нажимаем на вкладку "Вход" через JS на случай, если она перекрыта анимацией
+                    await page.evaluate("() => { const tabs = document.querySelectorAll('.tabs_list li'); tabs.forEach(t => { if(t.innerText.includes('Вход')) t.click(); }); }")
+                    await asyncio.sleep(2)
 
-                # Локализуем конкретную форму авторизации, чтобы не цеплять скрытые инпуты регистрации
-                login_form = page.locator('form[action*="login"], #host_login_form, .blocks-container').first
+                logger.info("Заполнение данных авторизации...")
+
+                # Точные селекторы по ID и атрибутам для логина
+                email_field = page.locator('#login_email, input[name="login"], input[name="email"]').first
+                await email_field.wait_for(state="visible", timeout=15000)
+                await email_field.fill(self._login)
                 
-                # Ищем и заполняем поле для логина внутри этой формы
-                login_input = login_form.locator('input[name="login"], input[name="email"]').first
-                await login_input.click()
-                await login_input.fill(self._login)
-                await asyncio.sleep(0.5)
+                # Точные селекторы по ID и атрибутам для пароля
+                password_field = page.locator('#login_password, input[name="password"]').first
+                await password_field.wait_for(state="visible", timeout=15000)
+                await password_field.fill(self._password)
                 
-                # Ищем и заполняем поле пароля строго внутри этой же формы
-                password_input = login_form.locator('input[name="password"]').first
-                await password_input.click()
-                await password_input.fill(self._password)
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(1)
                 
-                # Кликаем по кнопке отправки внутри формы
-                submit_button = login_form.locator('button[type="submit"], input[type="submit"], .btn_orange').first
-                await submit_button.click()
+                # Кнопка отправки формы входа
+                submit_btn = page.locator('#host_login_form button[type="submit"], .btn_orange, button:has-text("Войти")').first
+                await submit_btn.click()
                 
                 logger.info("Ожидание завершения авторизации...")
                 try:
@@ -112,6 +110,6 @@ class AdvegoJobHunter:
                 
                 return f"Сбой: {str(e)}", 0.0
             finally:
-                # Надежное закрытие сессии браузера
+                # Надежное закрытие сессии браузера без вызова сторонних атрибутов
                 await context.close()
                 await browser.close()
