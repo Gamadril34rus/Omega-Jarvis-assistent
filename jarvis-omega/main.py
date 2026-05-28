@@ -1,8 +1,16 @@
+import os
+import sys
+
+# Динамическое добавление путей, чтобы Render не терял папки
+current_dir = os.path.dirname(os.path.abspath(__file__))
+if current_dir not in sys.path:
+    sys.path.insert(0, current_dir)
+
+# Теперь импорт точно сработает
 from modules.core.jarvis_mind import JarvisMind
 
 import asyncio
 import logging
-import sys
 
 from dotenv import load_dotenv
 
