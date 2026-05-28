@@ -34,7 +34,7 @@ class AdvegoJobHunter:
             return "Ошибка: куки авторизации Advego не настроены.", 0.0
 
         async with async_playwright() as p:
-            # Маскируемся строго под мобильный Android-браузер Kiwi, из которого брались куки
+            # Идеальный мобильный юзер-агент
             kiwi_user_agent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
             
             browser = await p.chromium.launch(
@@ -44,18 +44,24 @@ class AdvegoJobHunter:
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
                     "--disable-infobars",
-                    "--ignore-certificate-errors"
+                    "--ignore-certificate-errors",
+                    "--use-fake-ui-for-media-stream",
+                    "--use-fake-device-for-media-stream"
                 ]
             )
             
-            # Настройки контекста эмулируют мобильный экран, чтобы верстка совпала с Kiwi
+            # Настраиваем контекст как у реального физического телефона (плотность пикселей, язык, тач-скрин)
             context = await browser.new_context(
                 user_agent=kiwi_user_agent,
                 viewport={"width": 390, "height": 844},
+                device_scale_factor=3,
                 is_mobile=True,
                 has_touch=True,
                 locale="ru-RU",
-                timezone_id="Europe/Moscow"
+                timezone_id="Europe/Moscow",
+                extra_http_headers={
+                    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7"
+                }
             )
             
             # Внедряем куки для домена advego.com ДО перехода на сайт
@@ -80,38 +86,40 @@ class AdvegoJobHunter:
             
             page = await context.new_page()
             
-            # Скрываем автоматизацию
+            # Полная маскировка объекта navigator, чтобы сайт не догадался об автоматизации
             await page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+                Object.defineProperty(navigator, 'maxTouchPoints', { get: () => 5 });
+                Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru'] });
             """)
 
             try:
-                # 1. Сразу прыгаем в ленту заказов
+                # 1. Пробуем перейти напрямую в ленту
                 logger.info("[Advego] Переход в ленту заказов напрямую через готовую сессию...")
-                await page.goto("https://advego.com/job/find/", wait_until="networkidle", timeout=30000)
-                await asyncio.sleep(random.uniform(3.0, 5.0))
+                await page.goto("https://advego.com/job/find/", wait_until="commit", timeout=30000)
+                await asyncio.sleep(random.uniform(4.0, 6.0))
 
-                # Проверяем, не выкинуло ли нас на авторизацию/Cloudflare
                 current_html = await page.content()
                 current_url = page.url
 
+                # Проверяем, куда нас закинуло
                 if "login" in current_url or "login" in current_html.lower():
-                    logger.warning("[Advego] Сессия по кукам не принята сайтом, перекинуло на логин.")
+                    logger.warning("[Advego] Сессия по кукам отклонена, сайт требует авторизацию.")
                     await self._safe_screenshot(page, "cookie_auth_failed.png")
                     await browser.close()
-                    return "Ошибка: Advego отклонил куки, требуется обновить их значения.", 0.0
+                    return "Ошибка: Сброс сессии. Требуется обновить куки из Kiwi.", 0.0
 
                 if "Cloudflare" in await page.title() or "Just a moment" in await page.title():
-                    logger.warning("[Advego] Проверка Cloudflare даже при входе по кукам.")
+                    logger.warning("[Advego] Обнаружен Cloudflare.")
                     await self._safe_screenshot(page, "cloudflare_on_cookies.png")
                     await browser.close()
-                    return "Заблокировано Cloudflare при переходе в ленту.", 0.0
+                    return "Заблокировано Cloudflare при входе.", 0.0
 
-                # 2. Фиксируем успешный вход в ленту
-                logger.info("[Advego] Успешный вход в скрытую зону выполнен!")
+                # 2. Фиксируем успешный вход
+                logger.info("[Advego] Успешный вход в личный кабинет выполнен!")
                 await self._safe_screenshot(page, "advego_jobs_feed_success.png")
                 
-                # Фиксируем доход в рублях
+                # Доход строго в рублях
                 revenue_rub = 0.0 
                 
                 logger.info("[Advego] Сканирование ленты успешно завершено.")
