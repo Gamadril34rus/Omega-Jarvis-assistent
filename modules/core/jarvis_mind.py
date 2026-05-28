@@ -6,7 +6,7 @@ import asyncio
 import logging
 import re
 
-logger = logging.getLogger("jarvis.core.mind")
+logger = logging.getLogger("jarvis.modules.core.jarvis_mind")
 
 class JarvisMind:
     def __init__(self, ai_router, plugins_dir="/app/modules/plugins"):
@@ -19,7 +19,7 @@ class JarvisMind:
             "getattr", "eval", "globals", "locals"
         ]
 
-    async def self_develop(self, task: str):
+    async def self_develop(self, task: str) -> str:
         """Джарвис генерирует код, проверяет безопасность, тестирует и внедряет"""
         prompt = f"""
         Ты — Джарвис, автономный саморазвивающийся ИИ.
@@ -33,9 +33,14 @@ class JarvisMind:
         """
         
         logger.info(f"[Джарвис] Запущено мышление над задачей: '{task}'")
-        # Делаем запрос через твой единый AI-роутер
-        ai_response = await self.ai_router.generate_text(prompt) 
-        code = self._extract_code(ai_response)
+        
+        try:
+            # ИСПРАВЛЕНО: вызываем .generate() вместо .generate_text() под твой FailSafeRouter
+            ai_response = await self.ai_router.generate(prompt) 
+            code = self._extract_code(ai_response)
+        except Exception as e:
+            logger.error(f"[Джарвис] Ошибка при запросе к ИИ-роутеру: {e}")
+            return f"❌ Ошибка вызова ИИ-роутера: {e}"
         
         if not code:
             return "❌ Не смог сгенерировать понятный код для этой задачи."
@@ -43,29 +48,38 @@ class JarvisMind:
         # 1. Проверка безопасности
         is_safe, threat = self._check_safety(code)
         if not is_safe:
+            logger.warning(f"[Защита] Блокировка потенциально опасного кода! Токен: {threat}")
             return f"⚠️ Безопасность: Блокировка! Мой код содержал запрещенный токен: `{threat}`. Задача отменена."
 
         # 2. Тестовый запуск в памяти (Самоанализ)
+        logger.info("[Джарвис] Запуск тестирования сгенерированного кода...")
         success, output = await self._test_run(code)
         
         if not success:
             logger.warning("[Джарвис] Ошибка в первом варианте кода. Исправляю себя...")
             # Даем ИИ шанс исправиться, скормив ему ошибку компиляции
             fix_prompt = f"Мой код упал с ошибкой:\n{output}\n\nИсправь этот код, сохранив структуру `async def run_plugin()`:\n{code}"
-            ai_response = await self.ai_router.generate_text(fix_prompt)
-            code = self._extract_code(ai_response)
-            success, output = await self._test_run(code)
+            
+            try:
+                # ИСПРАВЛЕНО: здесь тоже .generate()
+                ai_response = await self.ai_router.generate(fix_prompt)
+                code = self._extract_code(ai_response)
+                success, output = await self._test_run(code)
+            except Exception as e:
+                return f"❌ Ошибка при автоисправлении: {e}"
             
             if not success:
                 return f"❌ Автоисправление не помогло. Ошибка теста:\n{output}"
 
-        # 3. Физическое сохранение в твою структуру
+        # 3. Физическое сохранение в структуру плагинов
+        os.makedirs(self.plugins_dir, exist_ok=True)
         plugin_name = f"auto_plugin_{int(asyncio.get_event_loop().time())}.py"
         plugin_path = os.path.join(self.plugins_dir, plugin_name)
         
         try:
             with open(plugin_path, "w", encoding="utf-8") as f:
                 f.write(code)
+            logger.info(f"[Джарвис] Внедрен новый плагин: {plugin_name}")
             return f"✅ Джарвис успешно развил свой функционал!\n📦 Создан плагин: `modules/plugins/{plugin_name}`\n\n📊 Результат теста:\n{output}"
         except Exception as e:
             return f"❌ Не удалось записать файл плагина на диск: {e}"
