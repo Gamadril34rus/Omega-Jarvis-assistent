@@ -1,39 +1,3 @@
-import asyncio
-import logging
-from pathlib import Path
-from playwright.async_api import async_playwright
-
-logger = logging.getLogger("jarvis.plugins.advego_jobs")
-
-class AdvegoJobHunter:
-    def __init__(self, router):
-        self._router = router
-        self._login = "zmey1341@mail.ru"
-        self._password = "Samsung777+"
-        # Динамически определяем путь к папке static для сохранения скриншотов
-        self._static_dir = Path(__file__).resolve().parents[2] / "static"
-
-    async def hunt_and_execute(self):
-        async with async_playwright() as p:
-            # Запуск Chromium с флагами для стабильной работы внутри Docker-контейнера
-            browser = await p.chromium.launch(
-                headless=True,
-                args=[
-                    "--no-sandbox",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                    "--disable-setuid-sandbox",
-                    "--no-zygote"
-                ]
-            )
-            
-            # Маскируемся под обычный браузер
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 720}
-            )
-            page = await context.new_page()
-
             try:
                 logger.info("Переход на страницу авторизации Advego...")
                 await page.goto("https://advego.com/login/", timeout=60000)
@@ -41,22 +5,34 @@ class AdvegoJobHunter:
                 # Ожидаем, пока прекратится активный сетевой обмен
                 await page.wait_for_load_state("networkidle")
                 
-                # Проверяем наличие формы авторизации через гибкий мульти-селектор
+                # Ждем появления формы авторизации
                 try:
-                    await page.wait_for_selector('input[name="login"]:visible, input[name="email"]:visible', timeout=10000)
+                    await page.wait_for_selector('form[action*="login"]', timeout=10000)
                 except Exception:
-                    logger.warning("[Advego] Форма входа не найдена за 10с. Проверяем вкладку 'Вход'...")
+                    logger.warning("[Advego] Форма входа не найдена по селектору формы. Проверяем вкладку 'Вход'...")
                     login_tab = await page.query_selector('text="Вход"')
                     if login_tab and await login_tab.is_visible():
                         await login_tab.click()
                         await asyncio.sleep(2)
 
-                # ЗАПОЛНЕНИЕ ДАННЫХ: берем первое совпавшее видимое поле (login или email)
-                await page.locator('input[name="login"]:visible, input[name="email"]:visible').first.fill(self._login)
-                await page.locator('input[name="password"]:visible').first.fill(self._password)
+                # Локализуем конкретную форму авторизации, чтобы не цеплять поля регистрации
+                login_form = page.locator('form[action*="login"], #host_login_form, .blocks-container').first
                 
-                # Кликаем по видимой кнопке отправки формы
-                await page.click('button[type="submit"]:visible, input[type="submit"]:visible, .btn:visible')
+                # Ищем поле для логина внутри этой формы
+                login_input = login_form.locator('input[name="login"], input[name="email"]').filter(has_not=page.locator('[style*="display: none"]'))
+                await login_input.first.click()
+                await login_input.first.fill(self._login)
+                await asyncio.sleep(0.5)
+                
+                # Ищем поле пароля строго внутри этой же формы
+                password_input = login_form.locator('input[name="password"]').filter(has_not=page.locator('[style*="display: none"]'))
+                await password_input.first.click()
+                await password_input.first.fill(self._password)
+                await asyncio.sleep(0.5)
+                
+                # Ищем кнопку отправки внутри этой формы
+                submit_button = login_form.locator('button[type="submit"], input[type="submit"], .btn_orange').first
+                await submit_button.click()
                 
                 logger.info("Ожидание завершения авторизации...")
                 try:
@@ -77,7 +53,6 @@ class AdvegoJobHunter:
                 if not job_card:
                     return "Заказов пока нет", 0.0
 
-                # Ищем кнопку "Взять в работу"
                 take_button = await job_card.query_selector('a.job_take_link')
                 if take_button:
                     await take_button.click()
@@ -85,21 +60,3 @@ class AdvegoJobHunter:
                     return "Заказ успешно взят в работу!", 150.0 
                 
                 return "Доступны только тендеры, ждем свободный заказ", 0.0
-
-            except Exception as e:
-                logger.error(f"Ошибка в работе AdvegoJobHunter: {e}", exc_info=True)
-                
-                # Сохраняем скриншот страницы при любой непредвиденной ошибке
-                if self._static_dir.exists():
-                    screenshot_path = self._static_dir / "advego_error.png"
-                    try:
-                        await page.screenshot(path=str(screenshot_path))
-                        logger.info(f"[Advego] Скриншот страницы ошибки сохранен: {screenshot_path}")
-                    except Exception as screenshot_err:
-                        logger.error(f"Не удалось сохранить скриншот: {screenshot_err}")
-                
-                return f"Сбой: {str(e)}", 0.0
-            finally:
-                # Надежное закрытие контекста и сессии браузера без вызова сторонних атрибутов
-                await context.close()
-                await browser.close()
