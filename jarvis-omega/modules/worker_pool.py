@@ -8,8 +8,6 @@ from enum import Enum
 
 # Правильные относительные импорты без префикса jarvis_omega
 from modules.plugins.advego_job_hunter import AdvegoJobHunter
-# Если у тебя используется CPAContentFactory, импортируем её правильно:
-# from modules.plugins.cpa_factory import CPAContentFactory
 
 logger = logging.getLogger("jarvis.modules.worker_pool")
 
@@ -27,7 +25,7 @@ class Task:
     prompt: str
     task_type: TaskType = TaskType.LLM_CHAT
     metadata: dict = field(default_factory=dict)
-    created_at: float = field(default_factory=time.time)  # Исправлено: default_factory вместо прямого вызова
+    created_at: float = field(default_factory=time.time)
 
 class WorkerPool:
     def __init__(self, router, brain, notifier=None, num_workers: int = 3):
@@ -35,7 +33,7 @@ class WorkerPool:
         self._brain = brain
         self._notifier = notifier
         self._num_workers = num_workers
-        self._queue: asyncio.Queue[Task] = asyncio.Queue()
+        self._queue: asyncio.Queue = asyncio.Queue()  # Убрали жесткую типизацию для гибкости API
         self._running_event = asyncio.Event()
         self._running_event.set()
         self._worker_tasks: list[asyncio.Task] = []
@@ -83,11 +81,37 @@ class WorkerPool:
             try:
                 await self._running_event.wait()
                 try:
-                    task: Task = await asyncio.wait_for(self._queue.get(), timeout=1.0)
+                    raw_task = await asyncio.wait_for(self._queue.get(), timeout=1.0)
                 except asyncio.TimeoutError:
                     continue
 
-                await self._process_task(worker_id, task)
+                # --- Валидация и нормализация задачи из очереди ---
+                task = None
+                if isinstance(raw_task, Task):
+                    task = raw_task
+                elif isinstance(raw_task, dict):
+                    try:
+                        # Если прилетел dict из API — безопасно собираем из него объект Task
+                        t_type = raw_task.get("task_type", TaskType.LLM_CHAT)
+                        if isinstance(t_type, str):
+                            try:
+                                t_type = TaskType(t_type)
+                            except ValueError:
+                                t_type = TaskType.LLM_CHAT
+
+                        task = Task(
+                            prompt=raw_task.get("prompt", ""),
+                            task_type=t_type,
+                            metadata=raw_task.get("metadata", {})
+                        )
+                    except Exception as ex:
+                        logger.error(f"Worker-{worker_id} failed to parse task dict: {ex}")
+                
+                if task:
+                    await self._process_task(worker_id, task)
+                else:
+                    logger.error(f"Worker-{worker_id} received invalid task type: {type(raw_task)}")
+
                 self._queue.task_done()
             except asyncio.CancelledError:
                 break
@@ -101,12 +125,15 @@ class WorkerPool:
             response = ""
             action_details = ""
 
-            if task.task_type == TaskType.LLM_CHAT:
+            # Извлекаем строковое значение для логов и условий
+            current_type = task.task_type.value if isinstance(task.task_type, TaskType) else str(task.task_type)
+
+            if current_type == TaskType.LLM_CHAT.value:
                 messages = [{"role": "user", "content": task.prompt}]
                 response = await self._router.complete(messages)
                 action_details = "Чат с пользователем"
 
-            elif task.task_type == TaskType.HUNT_JOBS:
+            elif current_type == TaskType.HUNT_JOBS.value:
                 hunter = AdvegoJobHunter(router=self._router)
                 response, rev_rub = await hunter.hunt_and_execute()
                 revenue_usd = rev_rub / 91.0
@@ -117,7 +144,7 @@ class WorkerPool:
 
             await self._write_ledger(
                 worker_id=worker_id,
-                task_type=task.task_type.value,
+                task_type=current_type,
                 prompt=task.prompt,
                 response=response,
                 cost_usd=cost_usd,
@@ -136,7 +163,7 @@ class WorkerPool:
                 )
 
         except Exception as e:
-            logger.error(f"Task execution failed: {e}")
+            logger.error(f"Task execution failed inside _process_task: {e}", exc_info=True)
 
     async def _write_ledger(self, **kwargs) -> None:
         async with LEDGER_LOCK:
