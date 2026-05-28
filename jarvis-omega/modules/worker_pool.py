@@ -9,6 +9,7 @@ from enum import Enum
 # Импортируем созданные автономные модули
 from jarvis_omega.modules.plugins.cpa_factory import CPAContentFactory
 from jarvis_omega.modules.plugins.freelance_bot import FreelanceAutomator
+from modules.plugins.advego_job_hunter import AdvegoJobHunter
 
 logger = logging.getLogger("jarvis.modules.worker_pool")
 
