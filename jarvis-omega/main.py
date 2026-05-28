@@ -1,3 +1,5 @@
+from modules.core.jarvis_mind import JarvisMind
+
 import asyncio
 import logging
 import sys
