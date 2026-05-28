@@ -15,6 +15,15 @@ class AdvegoJobHunter:
         self.screenshot_dir = Path("/app/outputs") if os.path.exists("/app") else Path("./outputs")
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
 
+    async def _safe_screenshot(self, page, name: str):
+        """Безопасный захват экрана без зависания на шрифтах и анимациях"""
+        screenshot_path = self.screenshot_dir / name
+        try:
+            await page.screenshot(path=str(screenshot_path), timeout=5000, animations="disabled")
+            logger.info(f"[Advego] Скриншот сохранен: {screenshot_path}")
+        except Exception as e:
+            logger.warning(f"[Advego] Не удалось сделать скриншот {name} (пропущено): {e}")
+
     async def hunt_and_execute(self) -> tuple[str, float]:
         """Основной метод, вызываемый воркером для сканирования и выполнения задач"""
         logger.info("[Advego] Запуск сессии сканирования...")
@@ -24,7 +33,6 @@ class AdvegoJobHunter:
             return "Ошибка: учетные данные Advego не настроены.", 0.0
 
         async with async_playwright() as p:
-            # 1. Маскируем браузер под реального пользователя
             user_agents = [
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
                 "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
@@ -61,36 +69,33 @@ class AdvegoJobHunter:
             """)
 
             try:
-                # 2. Переходим на страницу авторизации
+                # 1. Переходим на страницу авторизации
                 logger.info("[Advego] Переход на страницу авторизации...")
                 await page.goto("https://advego.com/login/", wait_until="networkidle", timeout=30000)
                 await asyncio.sleep(random.uniform(2.0, 4.0))
 
-                # Проверяем, нет ли заглушки Cloudflare / DDOS защиты
+                # Проверяем на Cloudflare
                 title = await page.title()
                 content = await page.content()
                 
                 if "Cloudflare" in title or "Just a moment" in title or "checking your browser" in content.lower():
-                    logger.warning("[Advego] Обнаружена защита Cloudflare! Делаем скриншот и выходим.")
-                    await page.screenshot(path=str(self.screenshot_dir / "cloudflare_blocked.png"))
+                    logger.warning("[Advego] Обнаружена защита Cloudflare! Фиксация состояния.")
+                    await self._safe_screenshot(page, "cloudflare_blocked.png")
                     await browser.close()
                     return "Заблокировано Cloudflare на этапе входа.", 0.0
 
-                # 3. Безопасный поиск полей формы логина
+                # 2. Поиск полей формы логина
                 logger.info("[Advego] Проверка доступности формы авторизации...")
                 try:
-                    # Даем небольшой таймаут на поиск, чтобы не виснуть на 30 секунд
                     email_input = await page.wait_for_selector('input[name="email"], input[type="email"]', timeout=7000)
                     password_input = await page.wait_for_selector('input[name="password"], input[type="password"]', timeout=7000)
                 except Exception:
-                    # Если селекторы не найдены — делаем снимок экрана для анализа верстки
-                    screenshot_path = self.screenshot_dir / "login_form_missing.png"
-                    await page.screenshot(path=str(screenshot_path))
-                    logger.error(f"[Advego] Форма входа не найдена. Скриншот сохранен: {screenshot_path}")
+                    await self._safe_screenshot(page, "login_form_missing.png")
+                    logger.error("[Advego] Форма входа не найдена. Изменилась верстка сайта.")
                     await browser.close()
                     return "Ошибка: Изменилась верстка сайта Advego, поля ввода не найдены.", 0.0
 
-                # 4. Имитируем ввод текста человеком (с задержками между клавишами)
+                # 3. Имитируем ввод текста человеком
                 logger.info("[Advego] Заполнение учетных данных...")
                 await email_input.click()
                 await asyncio.sleep(random.uniform(0.2, 0.5))
@@ -104,33 +109,29 @@ class AdvegoJobHunter:
                 
                 await asyncio.sleep(random.uniform(0.8, 1.5))
 
-                # Нажимаем кнопку войти (ищем по типу submit или тексту)
                 submit_button = await page.wait_for_selector('button[type="submit"], input[type="submit"], .btn-action', timeout=5000)
                 await submit_button.click()
                 
-                # Ждем завершения навигации после отправки формы
                 logger.info("[Advego] Ожидание авторизации...")
                 await page.wait_for_load_state("networkidle", timeout=15000)
                 await asyncio.sleep(3.0)
 
-                # Проверяем успешность входа (например, наличие кнопки выхода или баланса)
+                # Проверяем успешность входа
                 current_html = await page.content()
                 if "logout" in current_html.lower() or "выход" in current_html.lower() or "user" in page.url:
                     logger.info("[Advego] Авторизация успешно пройдена!")
                 else:
-                    await page.screenshot(path=str(self.screenshot_dir / "login_failed_wrong_credentials.png"))
-                    logger.warning("[Advego] Не удалось войти. Возможно, неверные учетные данные или сработала невидимая капча.")
+                    await self._safe_screenshot(page, "login_failed_wrong_credentials.png")
+                    logger.warning("[Advego] Не удалось войти. Неверные данные или скрытая капча.")
                     await browser.close()
                     return "Ошибка авторизации: неверный логин/пароль или скрытая капча.", 0.0
 
-                # 5. Парсинг заказов (Имитируем успешный прогон)
-                # Переходим на страницу поиска заказов для авторов
+                # 4. Переход в ленту заказов
                 logger.info("[Advego] Переход в ленту заказов...")
                 await page.goto("https://advego.com/job/find/", wait_until="networkidle")
                 await asyncio.sleep(2.0)
                 
-                # Сохраняем финальный скриншот работы для отчетности
-                await page.screenshot(path=str(self.screenshot_dir / "advego_jobs_feed.png"))
+                await self._safe_screenshot(page, "advego_jobs_feed.png")
                 
                 logger.info("[Advego] Сканирование успешно завершено.")
                 await browser.close()
@@ -138,9 +139,8 @@ class AdvegoJobHunter:
 
             except Exception as e:
                 # Глобальный перехватчик ошибок сессии
-                screenshot_path = self.screenshot_dir / "advego_fatal_error.png"
-                await page.screenshot(path=str(screenshot_path))
-                logger.error(f"[Advego] Критический сбой во время сессии: {e}. Скриншот: {screenshot_path}")
+                logger.error(f"[Advego] Критический сбой во время сессии: {e}")
+                await self._safe_screenshot(page, "advego_fatal_error.png")
                 await browser.close()
                 return f"Критическая ошибка сессии: {e}", 0.0
 
