@@ -34,12 +34,17 @@ async def main():
         "Cascade: Gemini → OpenAI → Zhipu → OpenRouter → Ollama"
     )
 
+    # Инициализация модуля мышления и саморазвития Джарвиса
+    jarvis_mind = JarvisMind(ai_router=router, plugins_dir="/app/modules/plugins")
+    logger.info("[Main] JarvisMind (Ядро саморазвития) успешно запущено.")
+
     pool = WorkerPool(router=router, brain=brain, notifier=notifier, num_workers=3)
     await pool.start()
     logger.info("[Main] WorkerPool started with 3 workers.")
 
+    # Передаем созданный jarvis_mind внутрь таски телеграм-бота
     bot_task = asyncio.create_task(
-        start_bot(brain, pool=pool, notifier=notifier), name="telegram-bot"
+        start_bot(brain, pool=pool, notifier=notifier, jarvis_mind=jarvis_mind), name="telegram-bot"
     )
     server_task = asyncio.create_task(
         start_server(brain, pool=pool, notifier=notifier), name="tma-server"
