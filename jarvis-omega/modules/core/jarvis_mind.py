@@ -12,7 +12,7 @@ class JarvisMind:
     def __init__(self, ai_router, plugins_dir="/app/modules/plugins"):
         self.ai_router = ai_router
         self.plugins_dir = plugins_dir
-        # Защитный контур: запрещенные системные вызовы
+        # Защитный контур: блокируем деструктивные вызовы
         self.banned_tokens = [
             "os.environ", "environ", "shutil.rmtree", "os.system", 
             "subprocess", "rmdir", "remove", "unlink", "chmod", 
@@ -20,22 +20,29 @@ class JarvisMind:
         ]
 
     async def self_develop(self, task: str) -> str:
-        """Джарвис генерирует код, проверяет безопасность, тестирует и внедряет"""
+        """Цикл автономной генерации, проверки, исправления и внедрения кода"""
         prompt = f"""
-        Ты — Джарвис, автономный саморазвивающийся ИИ.
-        Тебе поставлена задача по саморазвитию: {task}
+        Ты — Джарвис, автономное саморазвивающееся ядро ИИ.
+        Твоя задача: {task}
         
-        Напиши архитектурно правильный Python-код (плагин), который решает эту задачу.
-        Код должен содержать асинхронную функцию `async def run_plugin()`, которая возвращает строку с результатом работы.
-        Не используй опасные системные вызовы. Всю логику пиши чисто и с обработкой ошибок.
+        ТРЕБОВАНИЯ К КОДУ:
+        1. Напиши архитектурно правильный, чистый код на Python.
+        2. Твой код ОБЯЗАТЕЛЬНО должен содержать асинхронную функцию:
+           async def run_plugin() -> str:
+               # Логика работы плагина
+               return "Результат работы в виде строки"
+        3. Название функции `run_plugin` изменять НЕЛЬЗЯ! Это точка входа.
+        4. Используй только предустановленные библиотеки: `playwright` (async_api), `asyncio`, `logging`, `json`, `re`, `sys`, `os`.
+        5. Использование `selenium` КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО! В системе установлен только Playwright.
+        6. Всю логику оборачивай в try/except для предотвращения падений.
         
-        Выведи ТОЛЬКО рабочий код на Python внутри тегов ```python ... ```. Никакого лишнего текста.
+        Выведи ТОЛЬКО рабочий код внутри разметки ```python ... ```. Никакого лишнего текста вне блока кода.
         """
         
         logger.info(f"[Джарвис] Запущено мышление над задачей: '{task}'")
         
         try:
-            # ИСПРАВЛЕНО: Приводим к формату FailSafeRouter.complete([{"role": "user", "content": ...}])
+            # Запрос к FailSafeRouter через метод .complete()
             messages = [{"role": "user", "content": prompt}]
             ai_response = await self.ai_router.complete(messages) 
             code = self._extract_code(ai_response)
@@ -46,23 +53,33 @@ class JarvisMind:
         if not code:
             return "❌ Не смог сгенерировать понятный код для этой задачи."
 
-        # 1. Проверка безопасности
+        # 1. Защитный барьер безопасности
         is_safe, threat = self._check_safety(code)
         if not is_safe:
             logger.warning(f"[Защита] Блокировка потенциально опасного кода! Токен: {threat}")
             return f"⚠️ Безопасность: Блокировка! Мой код содержал запрещенный токен: `{threat}`. Задача отменена."
 
-        # 2. Тестовый запуск в памяти (Самоанализ)
+        # 2. Тестирование компиляции и вызова в памяти (Самоанализ)
         logger.info("[Джарвис] Запуск тестирования сгенерированного кода...")
         success, output = await self._test_run(code)
         
-        if not success:
-            logger.warning("[Джарвис] Ошибка в первом варианте кода. Исправляю себя...")
-            # Даем ИИ шанс исправиться, скормив ему ошибку компиляции
-            fix_prompt = f"Мой код упал с ошибкой:\n{output}\n\nИсправь этот код, сохранив структуру `async def run_plugin()`:\n{code}"
+        if not success or "run_plugin() отсутствует" in output:
+            logger.warning("[Джарвис] Ошибка компиляции или структуры. Запуск автоисправления...")
+            
+            error_details = output if output else "Отсутствует обязательная функция async def run_plugin()"
+            fix_prompt = f"""
+            Мой сгенерированный код не прошел автоматический тест.
+            Ошибка компиляции/структуры:
+            {error_details}
+            
+            Пожалуйста, исправь этот код. 
+            Убедись, что в коде ПРИСУТСТВУЕТ функция `async def run_plugin()`, которая возвращает строку, и код использует исключительно Playwright (без selenium!).
+            
+            Предыдущий код:
+            {code}
+            """
             
             try:
-                # ИСПРАВЛЕНО: Здесь тоже перешли на .complete()
                 fix_messages = [{"role": "user", "content": fix_prompt}]
                 ai_response = await self.ai_router.complete(fix_messages)
                 code = self._extract_code(ai_response)
@@ -71,9 +88,9 @@ class JarvisMind:
                 return f"❌ Ошибка при автоисправлении: {e}"
             
             if not success:
-                return f"❌ Автоисправление не помогло. Ошибка теста:\n{output}"
+                return f"❌ Автоисправление не помогло. Код нестабилен. Ошибка теста:\n{output}"
 
-        # 3. Физическое сохранение в структуру плагинов
+        # 3. Физическая запись на диск
         os.makedirs(self.plugins_dir, exist_ok=True)
         plugin_name = f"auto_plugin_{int(asyncio.get_event_loop().time())}.py"
         plugin_path = os.path.join(self.plugins_dir, plugin_name)
@@ -100,13 +117,12 @@ class JarvisMind:
         
         try:
             local_vars = {}
-            # Выполняем объявление функций
             exec(code, globals(), local_vars)
             
             if "run_plugin" in local_vars:
-                # Безопасно запускаем асинхронную функцию в текущем цикле событий
-                result = await local_vars["run_plugin"]()
-                print(f"[Вывод]: {result}")
+                # Безопасный асинхронный вызов с таймаутом, чтобы не зависнуть на бесконечных циклах
+                result = await asyncio.wait_for(local_vars["run_plugin"](), timeout=15.0)
+                print(f"[Вывод плагина]: {result}")
             else:
                 print("⚠️ Ошибка: run_plugin() отсутствует.")
                 
