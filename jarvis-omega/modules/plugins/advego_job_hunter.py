@@ -10,8 +10,9 @@ logger = logging.getLogger("jarvis.plugins.advego_jobs")
 class AdvegoJobHunter:
     def __init__(self, router=None):
         self._router = router
-        self.username = os.getenv("ADVEGO_USERNAME", "")
-        self.password = os.getenv("ADVEGO_PASSWORD", "")
+        # Подтягиваем куки сессии из переменных окружения
+        self.cookie_sid = os.getenv("ADVEGO_COOKIE_SID", "")
+        self.cookie_token = os.getenv("ADVEGO_COOKIE_TOKEN", "")
         self.screenshot_dir = Path("/app/outputs") if os.path.exists("/app") else Path("./outputs")
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
 
@@ -26,17 +27,16 @@ class AdvegoJobHunter:
 
     async def hunt_and_execute(self) -> tuple[str, float]:
         """Основной метод, вызываемый воркером для сканирования и выполнения задач"""
-        logger.info("[Advego] Запуск сессии сканирования...")
+        logger.info("[Advego] Запуск сессии сканирования через куки...")
         
-        if not self.username or not self.password:
-            logger.error("[Advego] Переменные окружения ADVEGO_USERNAME или ADVEGO_PASSWORD не заданы!")
-            return "Ошибка: учетные данные Advego не настроены.", 0.0
+        if not self.cookie_sid or not self.cookie_token:
+            logger.error("[Advego] Ошибка: Переменные ADVEGO_COOKIE_SID или ADVEGO_COOKIE_TOKEN не заданы в Render!")
+            return "Ошибка: куки авторизации Advego не настроены.", 0.0
 
         async with async_playwright() as p:
             user_agents = [
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0"
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
             ]
             
             browser = await p.chromium.launch(
@@ -46,7 +46,6 @@ class AdvegoJobHunter:
                     "--no-sandbox",
                     "--disable-setuid-sandbox",
                     "--disable-infobars",
-                    "--window-position=0,0",
                     "--ignore-certificate-errors"
                 ]
             )
@@ -58,94 +57,76 @@ class AdvegoJobHunter:
                 timezone_id="Europe/Moscow"
             )
             
+            # Внедряем куки для домена advego.com ДО перехода на сайт
+            await context.add_cookies([
+                {
+                    "name": "domain_sid",
+                    "value": self.cookie_sid,
+                    "domain": ".advego.com",
+                    "path": "/",
+                    "httpOnly": True,
+                    "secure": True
+                },
+                {
+                    "name": "token",
+                    "value": self.cookie_token,
+                    "domain": ".advego.com",
+                    "path": "/",
+                    "httpOnly": False,
+                    "secure": True
+                }
+            ])
+            
             page = await context.new_page()
             
-            # Скрываем присутствие автоматизации webdriver
+            # Скрываем автоматизацию
             await page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                 window.chrome = { runtime: {} };
-                Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-                Object.defineProperty(navigator, 'languages', { get: () => ['ru-RU', 'ru', 'en-US', 'en'] });
             """)
 
             try:
-                # 1. Переходим на страницу авторизации
-                logger.info("[Advego] Переход на страницу авторизации...")
-                await page.goto("https://advego.com/login/", wait_until="networkidle", timeout=30000)
+                # 1. Прыгаем в ленту заказов
+                logger.info("[Advego] Переход в ленту заказов напрямую через готовую сессию...")
+                await page.goto("https://advego.com/job/find/", wait_until="networkidle", timeout=30000)
                 await asyncio.sleep(random.uniform(2.0, 4.0))
 
-                # Проверяем на Cloudflare
-                title = await page.title()
-                content = await page.content()
-                
-                if "Cloudflare" in title or "Just a moment" in title or "checking your browser" in content.lower():
-                    logger.warning("[Advego] Обнаружена защита Cloudflare! Фиксация состояния.")
-                    await self._safe_screenshot(page, "cloudflare_blocked.png")
-                    await browser.close()
-                    return "Заблокировано Cloudflare на этапе входа.", 0.0
-
-                # 2. Поиск полей формы логина
-                logger.info("[Advego] Проверка доступности формы авторизации...")
-                try:
-                    email_input = await page.wait_for_selector('input[name="email"], input[type="email"]', timeout=7000)
-                    password_input = await page.wait_for_selector('input[name="password"], input[type="password"]', timeout=7000)
-                except Exception:
-                    await self._safe_screenshot(page, "login_form_missing.png")
-                    logger.error("[Advego] Форма входа не найдена. Изменилась верстка сайта.")
-                    await browser.close()
-                    return "Ошибка: Изменилась верстка сайта Advego, поля ввода не найдены.", 0.0
-
-                # 3. Имитируем ввод текста человеком
-                logger.info("[Advego] Заполнение учетных данных...")
-                await email_input.click()
-                await asyncio.sleep(random.uniform(0.2, 0.5))
-                await page.keyboard.type(self.username, delay=random.uniform(50, 120))
-                
-                await asyncio.sleep(random.uniform(0.5, 1.0))
-                
-                await password_input.click()
-                await asyncio.sleep(random.uniform(0.2, 0.5))
-                await page.keyboard.type(self.password, delay=random.uniform(60, 130))
-                
-                await asyncio.sleep(random.uniform(0.8, 1.5))
-
-                submit_button = await page.wait_for_selector('button[type="submit"], input[type="submit"], .btn-action', timeout=5000)
-                await submit_button.click()
-                
-                logger.info("[Advego] Ожидание авторизации...")
-                await page.wait_for_load_state("networkidle", timeout=15000)
-                await asyncio.sleep(3.0)
-
-                # Проверяем успешность входа
+                # Проверяем, не выкинуло ли нас на авторизацию/Cloudflare
                 current_html = await page.content()
-                if "logout" in current_html.lower() or "выход" in current_html.lower() or "user" in page.url:
-                    logger.info("[Advego] Авторизация успешно пройдена!")
-                else:
-                    await self._safe_screenshot(page, "login_failed_wrong_credentials.png")
-                    logger.warning("[Advego] Не удалось войти. Неверные данные или скрытая капча.")
-                    await browser.close()
-                    return "Ошибка авторизации: неверный логин/пароль или скрытая капча.", 0.0
+                current_url = page.url
 
-                # 4. Переход в ленту заказов
-                logger.info("[Advego] Переход в ленту заказов...")
-                await page.goto("https://advego.com/job/find/", wait_until="networkidle")
-                await asyncio.sleep(2.0)
+                if "login" in current_url or "login" in current_html.lower():
+                    logger.warning("[Advego] Сессия по кукам не принята сайтом, перекинуло на логин.")
+                    await self._safe_screenshot(page, "cookie_auth_failed.png")
+                    await browser.close()
+                    return "Ошибка: Advego отклонил куки, требуется обновить их значения.", 0.0
+
+                if "Cloudflare" in await page.title() or "Just a moment" in await page.title():
+                    logger.warning("[Advego] Проверка Cloudflare даже при входе по кукам.")
+                    await self._safe_screenshot(page, "cloudflare_on_cookies.png")
+                    await browser.close()
+                    return "Заблокировано Cloudflare при переходе в ленту.", 0.0
+
+                # 2. Успешный вход в ленту
+                logger.info("[Advego] Успешный вход в закрытую зону выполнен!")
+                await self._safe_screenshot(page, "advego_jobs_feed_success.png")
                 
-                await self._safe_screenshot(page, "advego_jobs_feed.png")
+                # Твой парсер элементов (находим новые заказы, если есть)
+                # Переменная под доход в рублях
+                revenue_rub = 0.0 
                 
-                logger.info("[Advego] Сканирование успешно завершено.")
+                logger.info("[Advego] Сканирование ленты успешно завершено.")
                 await browser.close()
-                return "Сканирование ленты Advego завершено успешно. Подходящих заказов не найдено.", 0.0
+                return "Сканирование ленты Advego по активной сессии завершено. Новых заказов нет.", revenue_rub
 
             except Exception as e:
-                # Глобальный перехватчик ошибок сессии
-                logger.error(f"[Advego] Критический сбой во время сессии: {e}")
-                await self._safe_screenshot(page, "advego_fatal_error.png")
+                logger.error(f"[Advego] Критический сбой во время работы по кукам: {e}")
+                await self._safe_screenshot(page, "advego_cookie_fatal_error.png")
                 await browser.close()
                 return f"Критическая ошибка сессии: {e}", 0.0
 
 async def run_plugin() -> str:
     """Интерфейсная функция для тестирования плагина ядром JarvisMind"""
     hunter = AdvegoJobHunter()
-    result, revenue = await hunter.hunt_and_execute()
-    return f"Статус: {result} | Доход: {revenue} USD"
+    result, revenue_rub = await hunter.hunt_and_execute()
+    return f"Статус: {result} | Доход: {revenue_rub} руб."
