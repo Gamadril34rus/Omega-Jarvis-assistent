@@ -33,7 +33,6 @@ class AdvegoJobHunter:
         async with async_playwright() as p:
             kiwi_user_agent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
             
-            # Если переменная PROXY_URL пустая, запускаемся без прокси, если заполнена — заворачиваем трафик
             launch_options = {
                 "headless": True,
                 "args": [
@@ -46,7 +45,6 @@ class AdvegoJobHunter:
             
             if self.proxy_url:
                 logger.info("[Advego] Подключение через прокси сервер...")
-                # Playwright умеет парсить строку прокси или принимать объектом
                 launch_options["proxy"] = {"server": self.proxy_url}
 
             browser = await p.chromium.launch(**launch_options)
@@ -74,7 +72,7 @@ class AdvegoJobHunter:
             
             page = await context.new_page()
             
-            # Глубокий патч runtime-характеристик браузера против Cloudflare/Advego Antivirus
+            # Патч против детекта автоматизации
             await page.add_init_script("""
                 Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                 window.chrome = { runtime: {} };
@@ -87,7 +85,6 @@ class AdvegoJobHunter:
             """)
 
             try:
-                # Пробуем пробиться напрямую в обход главной страницы
                 logger.info("[Advego] Попытка прорыва в ленту заказов...")
                 await page.goto("https://advego.com/job/find/", wait_until="domcontentloaded", timeout=30000)
                 
@@ -97,65 +94,68 @@ class AdvegoJobHunter:
                 if "login" in current_url:
                     logger.warning("[Advego] Пробив не удался: Сервер Advego сбросил сессию на страницу авторизации.")
                     await browser.close()
-                    return "Сессия отклонена сервером (требуется прокси под регион Kiwi или новые куки).", 0.0
+                    return "Сессия отклонена сервером (требуется обновить куки).", 0.0
 
-                # Проверка на Cloudflare
                 title = await page.title()
                 if "Cloudflare" in title or "Just a moment" in title:
                     logger.warning("[Advego] Путь заблокирован Cloudflare.")
                     await browser.close()
                     return "Блокировка Cloudflare.", 0.0
 
-                logger.info("[Advego] Ура! Прорыв успешен. Начинаю сбор 20 заказов...")
+                logger.info("[Advego] Ура! Прорыв успешен. Начинаю сбор элементов...")
                 
-                # Делаем скриншот верстки мобилки для анализа, если селекторы не сработают
-                debug_screen = self.screenshot_dir / "advego_mobile_screen.png"
-                await page.screenshot(path=str(debug_screen), full_page=True)
-                logger.info(f"[Advego] Снимок экрана сохранен для отладки: {debug_screen}")
-
-                # --- БЛОК СБОРА ДАННЫХ (БЕЗОПАСНЫЙ) ---
+                # --- БЛОК СБОРА ДАННЫХ (БЫСТРЫЙ И БЕЗОПАСНЫЙ) ---
+                # Собираем все ссылки, содержащие переходы на заказы
+                job_links = await page.query_selector_all("a[href*='/job/']")
+                
                 parsed_jobs = []
-                try:
-                    # Пробуем дождаться хотя бы какого-нибудь стандартного контейнера
-                    await page.wait_for_selector(".job_task, [id^='task_'], .job-item, .task-item", timeout=5000)
-                    job_elements = await page.query_selector_all(".job_task, [id^='task_'], .job-item, .task-item")
-                except Exception:
-                    logger.warning("[Advego] Мобильные селекторы не найдены, переключаюсь на сбор по ссылкам и тегам.")
-                    # Запасной вариант: забираем все ссылки, ведущие на карточки задач
-                    job_elements = await page.query_selector_all("a[href*='/job/'], .task")
-
-                if not job_elements:
-                    logger.error("[Advego] Не удалось зацепиться ни за один элемент заказа на странице.")
-                else:
-                    for element in job_elements[:20]:
-                        try:
-                            job_id = await element.get_attribute("id") or "unknown"
+                seen_ids = set()
+                
+                for el in job_links:
+                    if len(parsed_jobs) >= 20:
+                        break
+                    try:
+                        href = await el.get_attribute("href") or ""
+                        text = await el.inner_text()
+                        text = text.strip()
+                        
+                        if not text or len(text) < 10: 
+                            continue # Пропускаем пустые ссылки или короткие кнопки типа "Подробнее"
                             
-                            # Вытягиваем весь текст, что есть в блоке
-                            raw_text = await element.inner_text()
-                            if raw_text:
-                                # Форматируем строку: убираем лишние переносы и берем первые 6 слов для заголовка
-                                clean_text = " ".join(raw_text.split())
-                                job_title = " ".join(clean_text.split()[:6]) + "..."
-                            else:
-                                job_title = "Без названия"
-                            
-                            parsed_jobs.append({
-                                "id": job_id.replace("task_", ""),
-                                "title": job_title.strip(),
-                                "price": "См. скриншот/верстку"
-                            })
-                        except Exception:
+                        # Выдергиваем ID из ссылки типа /job/view/123456/ или из параметров
+                        parts = [p for p in href.split("/") if p]
+                        job_id = "unknown"
+                        for i, part in enumerate(parts):
+                            if part == "view" and i + 1 < len(parts):
+                                job_id = parts[i + 1]
+                                break
+                        
+                        if job_id in seen_ids:
                             continue
+                            
+                        seen_ids.add(job_id)
+                        
+                        # Косметически урезаем заголовок, если он слишком длинный
+                        clean_title = " ".join(text.split())
+                        if len(clean_title) > 80:
+                            clean_title = clean_title[:77] + "..."
+                            
+                        parsed_jobs.append({
+                            "id": job_id,
+                            "title": clean_title,
+                            "price": "Парсинг цены отключен"
+                        })
+                    except Exception:
+                        continue
                 
                 # Сохраняем результат в файл snapshot.json
                 self.snapshot_path.write_text(json.dumps(parsed_jobs, ensure_ascii=False, indent=2))
-                logger.info(f"[Advego] Сбор завершен. Успешно сохранено {len(parsed_jobs)} элементов в snapshot.json.")
+                logger.info(f"[Advego] Сбор завершен. Найдено и сохранено {len(parsed_jobs)} уникальных заказов.")
                 
                 await browser.close()
                 return f"Успешный прорыв! Собрано элементов: {len(parsed_jobs)}", 0.0
 
             except Exception as e:
-                logger.error(f"[Advego] Ошибка при попытке прорыва/парсинга: {e}")
+                logger.error(f"[Advego] Ошибка при парсинге: {e}")
                 await browser.close()
                 return f"Сбой метода: {e}", 0.0
