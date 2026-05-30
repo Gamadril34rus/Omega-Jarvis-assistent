@@ -5,8 +5,24 @@ import random
 import json
 from pathlib import Path
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async  # Мощный бесплатный стелс
 from groq import AsyncGroq
+
+# --- АВТОНОМНЫЙ ИСПРАВЛЕННЫЙ ИМПОРТ STEALTH-ПАКЕТА ---
+try:
+    # Рабочий путь для сборки Linux (на Render)
+    from playwright_stealth.stealth import stealth_async
+except ImportError:
+    try:
+        # Классический путь для Windows
+        from playwright_stealth import stealth_async
+    except ImportError:
+        # Резервный вариант: если библиотека встала криво, бот не упадет, а продолжит работу
+        logging.getLogger("jarvis.plugins.advego_jobs").warning(
+            "Модуль stealth_async не обнаружен в системе. Запуск в штатном режиме."
+        )
+        async def stealth_async(page):
+            pass
+# ----------------------------------------------------
 
 logger = logging.getLogger("jarvis.plugins.advego_jobs")
 
@@ -209,7 +225,7 @@ class AdvegoJobHunter:
                     textarea = await page.query_selector("textarea[name='job_text'], textarea.report-text")
                     if textarea:
                         logger.info("[Advego] Скоростной ввод готового текста...")
-                        # Печатаем быстро (задержка 5-12 мс), имитируя бешеную скорость профи, но это реальные события клавиатуры
+                        # Печатаем быстро (задержка 5-12 мс), имитируя бешеную скорость профи
                         await textarea.type(result_text, delay=random.randint(5, 12)) 
                         await page.wait_for_timeout(1000)
 
