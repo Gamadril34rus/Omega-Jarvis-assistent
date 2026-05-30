@@ -78,7 +78,7 @@ async def main():
     logger.info("[Main] WorkerPool started with 3 workers.")
 
     # --- ИНТЕГРАЦИЯ ПЛАНИРОВЩИКА СЕТИ КАНАЛОВ ---
-    bot_token = os.getenv("BOT_TOKEN")
+    bot_token = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
     empire_bot = None
     empire_router = None
     
@@ -87,7 +87,10 @@ async def main():
             try:
                 from modules.plugins.network_empire import NetworkEmpireManager, router as config_router
             except ModuleNotFoundError:
-                from jarvis_omega.modules.plugins.network_empire import NetworkEmpireManager, router as config_router
+                try:
+                    from jarvis_omega.modules.plugins.network_empire import NetworkEmpireManager, router as config_router
+                except ModuleNotFoundError:
+                    from plugins.network_empire import NetworkEmpireManager, router as config_router
             
             empire_router = config_router
             # Создаем выделенный клиент для рассылки постов в каналы
@@ -96,7 +99,7 @@ async def main():
             
             async def auto_post_scheduler():
                 logger.info("[Main-Scheduler] Фоновый таймер сети каналов успешно запущен.")
-                # Даем системе 3 минуты (180 сек), чтобы поднять основные процессы, базы и пулы
+                # Даем системе 3 минуты (180 сек), чтобы поднять основные процессы
                 await asyncio.sleep(180)
                 while True:
                     try:
@@ -115,10 +118,10 @@ async def main():
         except Exception as plugin_err:
             logger.error(f"[Main] Не удалось запустить планировщик каналов: {plugin_err}")
     else:
-        logger.warning("[Main] Переменная BOT_TOKEN отсутствует. Сеть каналов не будет обновляться.")
+        logger.warning("[Main] Переменная BOT_TOKEN/TELEGRAM_BOT_TOKEN отсутствует. Сеть каналов не будет обновляться.")
     # --------------------------------------------
 
-    # Передаем созданный jarvis_mind и роутер империи внутрь таски телеграм-бота
+    # Передаем созданный jarvis_mind и роутер империи внутрь единой таски телеграм-бота
     bot_task = asyncio.create_task(
         start_bot(brain, pool=pool, notifier=notifier, jarvis_mind=jarvis_mind, empire_router=empire_router), name="telegram-bot"
     )
