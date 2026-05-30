@@ -1,7 +1,7 @@
 import logging
 import os
 import time
-import html  # Для безопасного экранирования HTML-разметки
+import html
 
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -23,11 +23,8 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
         return message.from_user is not None and message.from_user.id == admin_id
 
     def _get_queue_size(worker_pool) -> str:
-        """Безопасно вытаскивает размер очереди из пула воркеров."""
         if not worker_pool:
             return "N/A"
-        
-        # Перебираем возможные варианты названия атрибута очереди
         for attr_name in ['queue', '_queue', 'tasks', '_tasks']:
             q = getattr(worker_pool, attr_name, None)
             if q and hasattr(q, 'qsize'):
@@ -35,8 +32,6 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
                     return str(q.qsize())
                 except Exception:
                     pass
-        
-        # Если самой очереди как объекта нет, пробуем найти прямой метод пула
         for method_name in ['get_queue_size', 'qsize', 'size']:
             method = getattr(worker_pool, method_name, None)
             if method and callable(method):
@@ -44,7 +39,6 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
                     return str(method())
                 except Exception:
                     pass
-                    
         return "Unknown"
 
     @router.message(Command("start"))
@@ -68,7 +62,6 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
         if not is_admin(message):
             await message.answer("Access denied.")
             return
-        
         try:
             metrics = await brain.get_metrics()
         except Exception as e:
@@ -93,22 +86,18 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
             )
         else:
             text = f"System Status\nBrain metrics unavailable.{queue_info}"
-            
         await message.answer(text)
 
-    # --- ХЭНДЛЕР САМОРАЗВИТИЯ ДЖАРВИСА ---
     @router.message(Command("develop", "upgrade"))
     async def cmd_develop(message: Message):
         if not is_admin(message):
             await message.answer("Access denied.")
             return
-
         if not jarvis_mind:
             await message.answer("❌ Ошибка: Модуль JarvisMind не подключен к роутеру.")
             return
 
         task = message.text.split(maxsplit=1)[1] if len(message.text.split()) > 1 else ""
-        
         if not task:
             await message.answer(
                 "🤖 <b>Режим саморазвития Джарвиса</b>\n\n"
@@ -123,18 +112,14 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
             "Анализирую архитектуру, пишу тестовый код и проверяю его безопасность. Подожди немного...",
             parse_mode="HTML"
         )
-        
         try:
             result = await jarvis_mind.self_develop(task)
-            
-            # --- Защита от кривой разметки Телеграма ---
             if "```python" in result:
                 parts = result.split("```python")
                 intro = html.escape(parts[0].strip())
                 code_and_rest = parts[1].split("```")
                 code_block = html.escape(code_and_rest[0].strip())
                 outro = html.escape(code_and_rest[1].strip()) if len(code_and_rest) > 1 else ""
-                
                 formatted_text = f"{intro}\n\n<pre><code class='language-python'>{code_block}</code></pre>\n\n{outro}"
             else:
                 formatted_text = html.escape(result)
@@ -144,7 +129,6 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
             except Exception as parse_err:
                 logger.warning(f"[Admin] HTML parse failed, falling back to raw text: {parse_err}")
                 await message.answer(f"🤖 Отчет (сырой текст):\n\n{result}", parse_mode=None)
-
         except Exception as e:
             logger.error(f"[Admin] Self-develop error: {e}")
             await message.answer(f"❌ Критическая ошибка в процессе генерации кода: {e}")
@@ -159,7 +143,6 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
         else:
             await brain.pause_workers()
         await message.answer("Workers paused.")
-        logger.info(f"[Admin] Workers paused by admin {admin_id}")
 
     @router.message(Command("resume"))
     async def cmd_resume(message: Message):
@@ -171,7 +154,6 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
         else:
             await brain.resume_workers()
         await message.answer("Workers resumed.")
-        logger.info(f"[Admin] Workers resumed by admin {admin_id}")
 
     @router.message(Command("queue"))
     async def cmd_queue(message: Message):
@@ -194,7 +176,6 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
         except Exception as e:
             await message.answer(f"Error fetching alerts: {e}")
             return
-            
         if not history:
             await message.answer("No alerts sent yet.")
             return
@@ -202,47 +183,32 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
         for record in history:
             dt = time.strftime("%d.%m %H:%M:%S", time.localtime(record.ts))
             first_line = record.text.split("\n")[0] if record.text else ""
-            clean = (
-                first_line
-                .replace("<b>", "").replace("</b>", "")
-                .replace("<code>", "").replace("</code>", "")
-                .replace("<i>", "").replace("</i>", "")
-            )
+            clean = first_line.replace("<b>", "").replace("</b>", "").replace("<code>", "").replace("</code>", "").replace("<i>", "").replace("</i>", "")
             lines.append(f"[{dt}] {clean}")
         await message.answer("\n".join(lines))
 
     return router
 
 
-async def start_bot(brain, pool=None, notifier=None, jarvis_mind=None, empire_router=None):
-    from aiogram import Bot, Dispatcher
+async def start_bot(brain, pool=None, notifier=None, jarvis_mind=None, empire_router=None, bot_instance=None):
+    from aiogram import Dispatcher
     from aiogram.fsm.storage.memory import MemoryStorage
 
-    # Синхронизируем токены, проверяя оба возможных ключа в окружении
-    token = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
-    if not token:
-        raise ValueError("Ни BOT_TOKEN, ни TELEGRAM_BOT_TOKEN не заданы в переменных окружения.")
-
-    bot = Bot(token=token)
     dp = Dispatcher(storage=MemoryStorage())
     
     # Подключаем роутер админки
     dp.include_router(create_admin_router(brain, pool=pool, notifier=notifier, jarvis_mind=jarvis_mind))
     logger.info("[Admin] Роутер админки успешно подключен.")
 
-    # Если передан роутер империи каналов — жестко вшиваем его в этот же единственный диспетчер
+    # Подключаем роутер империи
     if empire_router:
         dp.include_router(empire_router)
         logger.info("[Admin] Роутер империи сетевых каналов ЖЕСТКО внедрен в Диспетчер.")
-    else:
-        logger.warning("[Admin] Роутер империи каналов отсутствует в параметрах запуска.")
 
     logger.info("[Admin] Starting Telegram bot polling...")
     try:
-        # Дропаем старые зависшие апдейты, чтобы избежать конфликтов при перезапуске
-        await bot.delete_webhook(drop_pending_updates=True)
-        await dp.start_polling(bot)
+        # Сбрасываем старые апдейты перед запуском
+        await bot_instance.delete_webhook(drop_pending_updates=True)
+        await dp.start_polling(bot_instance)
     except Exception as e:
         logger.exception(f"[Admin] Критическая ошибка при поллинге бота: {e}")
-    finally:
-        await bot.session.close()
