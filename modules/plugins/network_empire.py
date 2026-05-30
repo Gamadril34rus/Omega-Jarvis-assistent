@@ -5,9 +5,10 @@ import random
 import sqlite3
 from datetime import datetime, timedelta
 from aiogram import Router, F, Bot
-from aiogram.types import Message, LabeledPrice, PreCheckoutQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import Message, LabeledPrice, PreCheckoutQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import Command
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth  # Исправленный чистый импорт
 from groq import AsyncGroq
 
 logger = logging.getLogger("jarvis.network_empire")
@@ -49,13 +50,12 @@ def get_channel_id(env_name: str):
     if not val:
         return None
     val = val.strip()
-    # Если это отрицательный ID приватного канала или просто число
     if val.startswith("-") or val.isdigit():
         try:
             return int(val)
         except ValueError:
             return val
-    return val  # Возвращаем как строку, если это юзернейм вида @channelname
+    return val  
 
 # --- КОНФИГУРАЦИЯ НАПРАВЛЕНИЙ ---
 CHANNELS = {
@@ -119,16 +119,20 @@ class NetworkEmpireManager:
                     "--no-sandbox", 
                     "--disable-setuid-sandbox", 
                     "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled" # Архитектурно снимаем детект бота
+                    "--disable-web-security",
+                    "--disable-features=IsolateOrigins,site-per-process"
                 ]
             )
-            # Прикидываемся реальным ПК
+            
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 800},
-                locale="ru-RU"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                viewport={"width": 1366, "height": 768},
+                locale="ru-RU",
+                timezone_id="Europe/Moscow"
             )
+            
             page = await context.new_page()
+            await stealth(page)  # Внедрение маскировки под реального пользователя
 
             for chan_key, config in CHANNELS.items():
                 if not config["id"]:
@@ -136,13 +140,25 @@ class NetworkEmpireManager:
                     continue
                 try:
                     logger.info(f"[Empire] Идем на донора {chan_key}: {config['url']}")
-                    # Ждем именно 'networkidle' - полная загрузка JS
-                    await page.goto(config["url"], wait_until="networkidle", timeout=45000)
-                    await asyncio.sleep(4)
+                    
+                    await page.goto(config["url"], wait_until="domcontentloaded", timeout=45000)
+                    await asyncio.sleep(random.uniform(5.0, 8.0))  # Человеческая пауза
 
                     items = await page.query_selector_all("article.thread")
+                    
                     if not items:
-                        logger.error(f"[Empire ERROR] Элементы на странице {chan_key} не найдены. Возможна капча.")
+                        logger.error(f"[Empire ERROR] Элементы на странице {chan_key} не найдены. Делаю скриншот диагностики...")
+                        screenshot_path = f"fail_{chan_key}.png"
+                        await page.screenshot(path=screenshot_path, full_page=False)
+                        if ADMIN_ID:
+                            try:
+                                await self.bot.send_photo(
+                                    chat_id=ADMIN_ID,
+                                    photo=FSInputFile(screenshot_path),
+                                    caption=f"⚠️ **[Empire] Сбой парсинга {chan_key}!**\nПеппер заблокировал запрос. Посмотри скриншот, там капча или пустая страница."
+                                )
+                            except Exception as tg_err:
+                                logger.error(f"Не удалось отправить скриншот админу: {tg_err}")
                         continue
 
                     item = random.choice(items[:5])
@@ -187,10 +203,9 @@ class NetworkEmpireManager:
 
                         await self.bot.send_message(chat_id=config["id"], text=post_text, reply_markup=keyboard, parse_mode="Markdown")
                         logger.info(f"[Empire] УСПЕШНЫЙ АВТОПОСТ В {chan_key}")
-                        await asyncio.sleep(10)
+                        await asyncio.sleep(random.uniform(10.0, 15.0))
 
                 except Exception as e:
-                    # Архитектурно логируем полный трейсбэк
                     logger.error(f"[Empire ERROR] Сбой в канале {chan_key}: {e}", exc_info=True)
             
             await browser.close()
@@ -204,32 +219,43 @@ class NetworkEmpireManager:
                     "--no-sandbox", 
                     "--disable-setuid-sandbox", 
                     "--disable-dev-shm-usage",
-                    "--disable-blink-features=AutomationControlled"
+                    "--disable-web-security",
+                    "--disable-features=IsolateOrigins,site-per-process"
                 ]
             )
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                viewport={"width": 1280, "height": 800},
-                locale="ru-RU"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                viewport={"width": 1366, "height": 768},
+                locale="ru-RU",
+                timezone_id="Europe/Moscow"
             )
             page = await context.new_page()
+            await stealth(page)
 
             for chan_key, config in CHANNELS.items():
                 if not config["id"]:
                     continue
                 try:
                     logger.info(f"[МАСС-ПОСТИНГ] Сбор данных для {chan_key}...")
-                    await page.goto(config["url"], wait_until="networkidle", timeout=45000)
-                    await asyncio.sleep(3)
+                    await page.goto(config["url"], wait_until="domcontentloaded", timeout=45000)
+                    await asyncio.sleep(5)
 
                     # Прокрутка вниз для забивки пула товаров
                     for _ in range(7):
                         await page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                        await asyncio.sleep(1.5)
+                        await asyncio.sleep(random.uniform(1.5, 2.5))
 
                     items = await page.query_selector_all("article.thread")
-                    posted = 0
+                    
+                    if not items:
+                        logger.error(f"[МАСС-ПОСТИНГ ERROR] Не удалось собрать базу для {chan_key}. Делаю скриншот...")
+                        screenshot_path = f"bulk_fail_{chan_key}.png"
+                        await page.screenshot(path=screenshot_path)
+                        if ADMIN_ID:
+                            await self.bot.send_photo(chat_id=ADMIN_ID, photo=FSInputFile(screenshot_path), caption=f"❌ Масс-постинг лег на {chan_key}")
+                        continue
 
+                    posted = 0
                     for item in items:
                         if posted >= target_count:
                             break
@@ -270,10 +296,10 @@ class NetworkEmpireManager:
                                 await self.bot.send_message(chat_id=config["id"], text=post_text, reply_markup=keyboard, parse_mode="Markdown")
                                 posted += 1
                                 logger.info(f"[МАСС-ПОСТИНГ] Пост {posted}/{target_count} отправлен в {chan_key}")
-                                await asyncio.sleep(3.5)  # Жесткая защита от FloodWait
+                                await asyncio.sleep(random.uniform(4.0, 6.0))  
                             except Exception as tg_err:
                                 logger.error(f"Лимит ТГ (FloodWait/Error): {tg_err}")
-                                await asyncio.sleep(15)
+                                await asyncio.sleep(20)
 
                     logger.info(f"[МАСС-ПОСТИНГ] Канал {chan_key} успешно заполнен на {posted} постов.")
                 except Exception as e:
