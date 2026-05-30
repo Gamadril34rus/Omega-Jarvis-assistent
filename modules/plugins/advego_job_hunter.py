@@ -120,8 +120,8 @@ class AdvegoJobHunter:
 
     async def _evaluate_job_with_ai(self, title: str, description: str, addendums: str) -> dict:
         """Глубокий когнитивный анализ ТЗ и скрытых дополнений заказчика"""
-        if not self.groq_client:
-            return {"suitable": False, "reason": "Ключ Groq отсутствует"}
+        if not self.groq_client or not os.getenv("GROQ_API_KEY"):
+            return {"suitable": False, "reason": "Ключ Groq отсутствует или не инициализирован"}
 
         prompt = (
             "Ты — автономный ИИ-фрилансер. Оцени, сможешь ли ты выполнить этот заказ на бирже "
@@ -135,5 +135,135 @@ class AdvegoJobHunter:
             '{"suitable": true или false, "reason": "краткая причина", "style_hint": "указание по стилю текста"}'
         )
 
+        user_content = f"Название заказа: {title}\nОписание ТЗ: {description}\nДополнения: {addendums}"
+
         try:
-            completion = await self.groq
+            # ИСПРАВЛЕНО: Правильные отступы и обращение к self.groq_client
+            completion = await self.groq_client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": user_content}
+                ],
+                temperature=0.2,
+                response_format={"type": "json_object"}
+            )
+            
+            raw_response = completion.choices[0].message.content or "{}"
+            return json.loads(raw_response)
+            
+        except Exception as e:
+            logger.error(f"[AI Evaluation Error] Не удалось проанализировать заказ через Groq: {e}")
+            return {"suitable": False, "reason": f"Ошибка парсинга или вызова LLM: {e}"}
+
+    async def run(self):
+        """Основной рабочий цикл парсинга и обработки ленты заказов"""
+        logger.info("[Hunter-Core] Запуск сессии мониторинга Advego...")
+        
+        async with async_playwright() as p:
+            # Базовые аргументы скрытия автоматизации
+            browser_args = [
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-setuid-sandbox"
+            ]
+            
+            browser = await p.chromium.launch(headless=True, args=browser_args)
+            
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                viewport={"width": 1280, "height": 800},
+                proxy={"server": self.proxy_url} if self.proxy_url else None
+            )
+            
+            # Накатываем куки авторизации, если они переданы
+            if self.cookie_sid or self.cookie_token:
+                cookies = []
+                if self.cookie_sid:
+                    cookies.append({"name": "sid", "value": self.cookie_sid, "domain": ".advego.com", "path": "/"})
+                if self.cookie_token:
+                    cookies.append({"name": "token", "value": self.cookie_token, "domain": ".advego.com", "path": "/"})
+                await context.add_cookies(cookies)
+
+            page = await context.new_page()
+            await stealth_async(page)
+            
+            try:
+                target_url = "https://advego.com/job/find/"
+                logger.info(f"[Hunter-Core] Переход на страницу поиска: {target_url}")
+                await page.goto(target_url, wait_until="domcontentloaded", timeout=45000)
+                
+                # Обрабатываем возможный челендж Cloudflare
+                await self._click_cloudflare_checkbox(page)
+                
+                # Ожидаем появления блока с заказами
+                await page.wait_for_selector(".job-item, .work-block, [id^='job_']", timeout=15000)
+                
+                # Сохраняем отладочный скриншот состояния страницы
+                await page.screenshot(path=self.screenshot_dir / "advego_feed.png")
+                
+                # Собираем все карточки заказов
+                job_cards = await page.query_selector_all(".job-item, .work-block, [id^='job_']")
+                logger.info(f"[Hunter-Core] Найдено {len(job_cards)} карточек на текущей странице.")
+                
+                for card in job_cards:
+                    try:
+                        # Извлекаем уникальный ID заказа
+                        raw_id = await card.get_attribute("id") or ""
+                        job_id = "".join(filter(str.isdigit, raw_id))
+                        if not job_id:
+                            continue
+                            
+                        if self._is_job_processed(job_id):
+                            continue
+                        
+                        # Парсим контент карточки
+                        title_el = await card.query_selector(".job-title, h1, h2, h3, a.job_action")
+                        title = await title_el.inner_text() if title_el else "Без названия"
+                        title = title.strip().replace("\n", " ")
+                        
+                        desc_el = await card.query_selector(".job-text, .description, .body")
+                        description = await desc_el.inner_text() if desc_el else ""
+                        
+                        logger.info(f"[Analysis] Проверка заказа #{job_id}: '{title[:45]}...'")
+                        
+                        # Вызываем ИИ-оценку
+                        evaluation = await self._evaluate_job_with_ai(title, description, "")
+                        
+                        if evaluation.get("suitable") is True:
+                            logger.info(f"[Action]  ПОДХОДИТ! Берём в работу. Причина: {evaluation.get('reason')}")
+                            
+                            # Попытка кликнуть по кнопке согласия / выполнения
+                            take_button = await card.query_selector("button:has-text('Взять в работу'), .btn-take, .job_action_take")
+                            if take_button:
+                                box = await take_button.bounding_box()
+                                if box:
+                                    await self._human_mouse_movement(page, box["x"] + box["width"]/2, box["y"] + box["height"]/2)
+                                    await take_button.click()
+                                    logger.info(f"[Action] Успешно кликнули на 'Взять в работу' для #{job_id}")
+                                    self._mark_job_status(job_id, title, "TAKEN")
+                                else:
+                                    await take_button.click()
+                                    self._mark_job_status(job_id, title, "TAKEN_DIRECT")
+                            else:
+                                logger.warning(f"[Action] Кнопка взятия не найдена для #{job_id} (возможно, тендер)")
+                                self._mark_job_status(job_id, title, "SUITABLE_BUT_NO_BUTTON")
+                        else:
+                            logger.info(f"[Action] Пропуск #{job_id}. Причина: {evaluation.get('reason')}")
+                            self._mark_job_status(job_id, title, "SKIPPED")
+                            
+                    except Exception as card_err:
+                        logger.error(f"Ошибка при парсинге карточки заказа: {card_err}")
+                        continue
+                        
+            except Exception as e:
+                logger.error(f"[Hunter-Core] Критический сбой сессии: {e}")
+                await page.screenshot(path=self.screenshot_dir / "emergency_crash.png")
+            finally:
+                await browser.close()
+                logger.info("[Hunter-Core] Сессия Playwright завершена.")
+
+if __name__ == "__main__":
+    # Быстрый локальный тест модуля
+    hunter = AdvegoJobHunter()
+    asyncio.run(hunter.run())
