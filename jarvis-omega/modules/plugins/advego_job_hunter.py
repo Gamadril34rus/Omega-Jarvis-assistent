@@ -5,6 +5,8 @@ import random
 import json
 from pathlib import Path
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async  # Мощный бесплатный стелс
+from groq import AsyncGroq
 
 logger = logging.getLogger("jarvis.plugins.advego_jobs")
 
@@ -13,146 +15,215 @@ class AdvegoJobHunter:
         self._router = router
         self.cookie_sid = os.getenv("ADVEGO_COOKIE_SID", "")
         self.cookie_token = os.getenv("ADVEGO_COOKIE_TOKEN", "")
-        
-        # Настройки прокси (добавь эти переменные в Render, если используешь прокси)
-        # Формат: http://username:password@proxy_address:port
         self.proxy_url = os.getenv("PROXY_URL", "") 
+        self.groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY", ""))
         
         self.screenshot_dir = Path("/app/outputs") if os.path.exists("/app") else Path("./outputs")
         self.screenshot_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Путь для сохранения снапшота заказов
-        self.snapshot_path = self.screenshot_dir / "snapshot.json"
+
+    async def _click_cloudflare_checkbox(self, page) -> bool:
+        """Бесплатный автопробив: поиск и клик по чекбоксу Cloudflare Turnstile внутри фрейма"""
+        try:
+            logger.info("[Stealth-Solver] Поиск защитных фреймов Cloudflare...")
+            # Ждем появления фрейма капчи
+            await page.wait_for_timeout(2000)
+            
+            for frame in page.frames:
+                if "cloudflare" in frame.url or "turnstile" in frame.url:
+                    logger.info("[Stealth-Solver] Фрейм Cloudflare обнаружен. Ищу чекбокс...")
+                    checkbox = await frame.query_selector("input[type='checkbox'], #challenge-stage, .cb-i")
+                    if checkbox:
+                        # Получаем координаты центра чекбокса
+                        box = await checkbox.bounding_box()
+                        if box:
+                            # Имитируем реальное человеческое движение мыши к объекту
+                            await page.mouse.move(
+                                box["x"] + box["width"] / 2 + random.uniform(-2, 2),
+                                box["y"] + box["height"] / 2 + random.uniform(-2, 2)
+                            )
+                            await page.mouse.down()
+                            await asyncio.sleep(random.uniform(0.1, 0.3))
+                            await page.mouse.up()
+                            logger.info("[Stealth-Solver] Чекбокс Cloudflare успешно нажат без сторонних сервисов!")
+                            await page.wait_for_timeout(4000)
+                            return True
+            return False
+        except Exception as e:
+            logger.error(f"[Stealth-Solver] Не удалось нажать чекбокс: {e}")
+            return False
+
+    async def _evaluate_job_with_ai(self, title: str, description: str) -> bool:
+        """Анализ ТЗ"""
+        prompt = (
+            "Определи, может ли ИИ выполнить заказ автономно только текстом. "
+            "ДА - статьи, отзывы, рерайт, переводы. "
+            "НЕТ - скачивания, реги, соцсети, лайки, фото. "
+            "Отвечай ТОЛЬКО 'YES' или 'NO'.\n"
+            f"Заголовок: {title}\nТЗ: {description}"
+        )
+        try:
+            completion = await self.groq_client.chat.completions.create(
+                model="llama3-8b-8192",
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=5
+            )
+            return "YES" in completion.choices[0].message.content.strip().upper()
+        except Exception:
+            return False
+
+    async def _generate_human_work(self, description: str) -> str:
+        """Генерация текста"""
+        system_prompt = (
+            "Ты опытный фрилансер. Выполни ТЗ. Пиши живо, разговорно, без нейро-штампов, "
+            "соблюдай ключи. Сразу выдавай готовый текст работы без приветствий и лишней воды."
+        )
+        try:
+            completion = await self.groq_client.chat.completions.create(
+                model="llama3-70b-8192", 
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Выполни это ТЗ: {description}"}
+                ],
+                temperature=0.7,
+            )
+            return completion.choices[0].message.content.strip()
+        except Exception:
+            return "Сбой генерации текста."
 
     async def hunt_and_execute(self) -> tuple[str, float]:
-        logger.info("[Advego] Автономный поиск пути пробива... Запуск Playwright.")
+        logger.info("[Advego] Запуск Бесплатного Автономного Агента (Режим: Усиленный Стелс)...")
         
         if not self.cookie_sid or not self.cookie_token:
-            return "Ошибка: Не заданы куки авторизации.", 0.0
+            return "Ошибка: Не заданы куки.", 0.0
 
         async with async_playwright() as p:
-            kiwi_user_agent = "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Mobile Safari/537.36"
-            
             launch_options = {
                 "headless": True,
                 "args": [
                     "--disable-blink-features=AutomationControlled",
                     "--no-sandbox",
-                    "--disable-setuid-sandbox",
                     "--disable-dev-shm-usage",
-                    "--disable-infobars"
+                    "--window-size=1920,1080"
                 ]
             }
-            
             if self.proxy_url:
-                logger.info("[Advego] Подключение через прокси сервер...")
                 launch_options["proxy"] = {"server": self.proxy_url}
 
             browser = await p.chromium.launch(**launch_options)
             
+            # Формируем чистый контекст обычного ПК
             context = await browser.new_context(
-                user_agent=kiwi_user_agent,
-                viewport={"width": 390, "height": 844},
-                device_scale_factor=3,
-                is_mobile=True,
-                has_touch=True,
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                viewport={"width": 1920, "height": 1080},
                 locale="ru-RU",
-                timezone_id="Europe/Moscow",
-                extra_http_headers={
-                    "Accept-Language": "ru-RU,ru;q=0.9,en-US;q=0.8,en;q=0.7",
-                    "Sec-Ch-Ua-Mobile": "?1",
-                    "Sec-Ch-Ua-Platform": '"Android"'
-                }
+                timezone_id="Europe/Moscow"
             )
             
-            # Накатываем куки
+            page = await context.new_page()
+            
+            # Инжектируем профессиональный стелс-пакет (скрывает автоматизацию напрочь)
+            await stealth_async(page)
+            
+            # Накатываем куки авторизации
             await context.add_cookies([
                 {"name": "domain_sid", "value": self.cookie_sid, "domain": ".advego.com", "path": "/"},
                 {"name": "token", "value": self.cookie_token, "domain": ".advego.com", "path": "/"}
             ])
-            
-            page = await context.new_page()
-            
-            # Патч против детекта автоматизации
-            await page.add_init_script("""
-                Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-                window.chrome = { runtime: {} };
-                const originalQuery = window.navigator.permissions.query;
-                window.navigator.permissions.query = (parameters) => (
-                    parameters.name === 'notifications' ? 
-                    Promise.resolve({ state: Notification.permission }) : 
-                    originalQuery(parameters)
-                );
-            """)
 
             try:
-                logger.info("[Advego] Попытка прорыва в ленту заказов...")
-                await page.goto("https://advego.com/job/find/", wait_until="domcontentloaded", timeout=30000)
-                
-                await asyncio.sleep(random.uniform(3.0, 5.0))
-                current_url = page.url
-                
-                if "login" in current_url:
-                    logger.warning("[Advego] Пробив не удался: Сервер Advego сбросил сессию на страницу авторизации.")
-                    await browser.close()
-                    return "Сессия отклонена сервером (требуется обновить куки).", 0.0
+                # 1. Заходим в ленту заказов
+                await page.goto("https://advego.com/job/find/", wait_until="domcontentloaded", timeout=45000)
+                await page.wait_for_timeout(3000)
 
+                # Проверяем, вылезла ли блокировка / чекбокс
                 title = await page.title()
-                if "Cloudflare" in title or "Just a moment" in title:
-                    logger.warning("[Advego] Путь заблокирован Cloudflare.")
-                    await browser.close()
-                    return "Блокировка Cloudflare.", 0.0
+                if "Just a moment" in title or "Cloudflare" in title:
+                    logger.warning("[Advego] Зафиксирован барьер Cloudflare. Включаю бесплатный кликер...")
+                    solved = await self._click_cloudflare_checkbox(page)
+                    if not solved:
+                        await browser.close()
+                        return "Капча заблокировала проход. Стелс не справился.", 0.0
 
-                logger.info("[Advego] Ура! Прорыв успешен. Начинаю сбор элементов...")
-                
-                # --- БЛОК СБОРА ДАННЫХ (МАКСИМАЛЬНЫЙ ОХВАТ) ---
-                # Собираем СБСОЛЮТНО ВСЕ ссылки на странице для анализа
-                all_links = await page.query_selector_all("a")
-                
-                parsed_jobs = []
-                seen_titles = set()
-                
-                for el in all_links:
-                    if len(parsed_jobs) >= 20:
-                        break
-                    try:
-                        href = await el.get_attribute("href") or ""
-                        text = await el.inner_text()
-                        text = text.strip()
-                        
-                        # Если в ссылке есть "job" и текст длиннее 15 символов — это 99% название или описание заказа
-                        if "job" in href.lower() and text and len(text) > 15:
-                            clean_title = " ".join(text.split())
-                            
-                            if clean_title in seen_titles:
-                                continue
-                                
-                            seen_titles.add(clean_title)
-                            
-                            # Парсим ID из ссылки, если он там есть цифрами
-                            job_id = "".join([c for c in href if c.isdigit()])
-                            if not job_id:
-                                job_id = str(random.randint(100000, 999999))
-                                
-                            if len(clean_title) > 90:
-                                clean_title = clean_title[:87] + "..."
-                                
-                            parsed_jobs.append({
-                                "id": job_id,
-                                "title": clean_title,
-                                "price": "Доступно в ЛК"
-                            })
-                    except Exception:
+                if "login" in page.url:
+                    await browser.close()
+                    return "Сессия слетела (неверные куки).", 0.0
+
+                # Ищем доступные задачи
+                job_links_elements = await page.query_selector_all("a[href*='/job/view/']")
+                job_urls = []
+                for el in job_links_elements:
+                    href = await el.get_attribute("href")
+                    if href and href not in job_urls:
+                        job_urls.append(f"https://advego.com{href}" if href.startswith("/") else href)
+
+                if not job_urls:
+                    await browser.close()
+                    return "Заказы не найдены в ленте.", 0.0
+
+                # 2. Быстрый прогон по карточкам
+                for job_url in job_urls[:5]:
+                    await page.goto(job_url, wait_until="domcontentloaded")
+                    await page.wait_for_timeout(1500)
+
+                    title_el = await page.query_selector("h1")
+                    desc_el = await page.query_selector(".task-description, div[itemprop='description']") 
+                    
+                    if not title_el or not desc_el:
                         continue
-                
-                # Сохраняем результат в файл snapshot.json
-                self.snapshot_path.write_text(json.dumps(parsed_jobs, ensure_ascii=False, indent=2))
-                logger.info(f"[Advego] Сбор завершен. Успешно сохранено {len(parsed_jobs)} заказов в snapshot.json.")
-                
+
+                    title = await title_el.inner_text()
+                    description = await desc_el.inner_text()
+
+                    # Оценка пригодности заказа через ИИ
+                    can_do = await self._evaluate_job_with_ai(title, description)
+                    if not can_do:
+                        continue
+
+                    logger.info(f"[Advego] Беру в работу: {title[:40]}")
+
+                    # Клик "Взять в работу"
+                    take_btn = await page.query_selector("button:has-text('Взять в работу'), a:has-text('Взять в работу')")
+                    if take_btn:
+                        await take_btn.click()
+                        await page.wait_for_timeout(1000)
+                        
+                        confirm_btn = await page.query_selector("button:has-text('Подтвердить'), button.btn-success")
+                        if confirm_btn:
+                            await confirm_btn.click()
+
+                    # Генерация контента в фоне
+                    result_text = await self._generate_human_work(description)
+                    if result_text == "Сбой генерации текста.":
+                        continue
+
+                    # Выдерживаем паузу безопасности (15 сек), чтобы не спалиться перед антифродом Advego
+                    await page.wait_for_timeout(15000)
+
+                    # Переход к форме сдачи
+                    execute_btn = await page.query_selector("a:has-text('Выполнить'), button:has-text('Отправить работу')")
+                    if execute_btn:
+                        await execute_btn.click()
+                        await page.wait_for_timeout(1500)
+
+                    textarea = await page.query_selector("textarea[name='job_text'], textarea.report-text")
+                    if textarea:
+                        logger.info("[Advego] Скоростной ввод готового текста...")
+                        # Печатаем быстро (задержка 5-12 мс), имитируя бешеную скорость профи, но это реальные события клавиатуры
+                        await textarea.type(result_text, delay=random.randint(5, 12)) 
+                        await page.wait_for_timeout(1000)
+
+                        submit_btn = await page.query_selector("button[type='submit']:has-text('Отправить')")
+                        if submit_btn:
+                            await submit_btn.click()
+                            logger.info("[Advego] Работа успешно сдана заказчику без копейки затрат на капчу!")
+                            await browser.close()
+                            return f"Успех! Работа выполнена: {title[:30]}...", 0.0
+
                 await browser.close()
-                return f"Успешный прорыв! Собрано элементов: {len(parsed_jobs)}", 0.0
+                return "В текущей ленте нет подходящих задач для ИИ.", 0.0
 
             except Exception as e:
-                logger.error(f"[Advego] Ошибка при парсинге: {e}")
+                logger.error(f"[Advego Ошибка]: {e}", exc_info=True)
                 await browser.close()
-                return f"Сбой метода: {e}", 0.0
+                return f"Сбой системы: {e}", 0.0
