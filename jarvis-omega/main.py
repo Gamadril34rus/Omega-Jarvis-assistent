@@ -1,36 +1,28 @@
 import os
 import sys
+import asyncio
+import logging
+from dotenv import load_dotenv
 
 # Жесткий поиск корня проекта и всех поддиректорий
 current_dir = os.path.dirname(os.path.abspath(__file__))
 if current_dir not in sys.path:
     sys.path.insert(0, current_dir)
 
-# Дополнительно сканируем подпапки на случай, если Render создал вложенную структуру
 for root, dirs, files in os.walk(current_dir):
     if "modules" in dirs:
-        modules_path = os.path.join(root, "modules")
         if root not in sys.path:
             sys.path.insert(0, root)
         break
 
-# Пытаемся импортировать через абсолютный и относительный пути (Failsafe импорт)
 try:
     from modules.core.jarvis_mind import JarvisMind
 except ModuleNotFoundError:
     try:
-        # Если папка modules оказалась в корне выполнения напрямую
         from core.jarvis_mind import JarvisMind
     except ModuleNotFoundError:
-        # Если структура застряла внутри вложенной директории jarvis-omega
         sys.path.append(os.path.join(current_dir, "jarvis-omega"))
         from modules.core.jarvis_mind import JarvisMind
-
-import asyncio
-import logging
-
-from dotenv import load_dotenv
-from aiogram import Bot
 
 load_dotenv()
 
@@ -39,12 +31,10 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)],
 )
-
 logger = logging.getLogger("jarvis.main")
 
 
 async def main():
-    # Импорты остальных модулей с защитой от сбоя путей
     try:
         from core.brain import brain
         from core.fail_safe_routing import FailSafeRouter
@@ -64,12 +54,8 @@ async def main():
     logger.info("[Main] Notifier initialized (cooldown: 5 min per alert key).")
 
     router = FailSafeRouter(brain=brain, notifier=notifier)
-    logger.info(
-        "[Main] FailSafeRouter initialized. "
-        "Cascade: Gemini → OpenAI → Zhipu → OpenRouter → Ollama"
-    )
+    logger.info("[Main] FailSafeRouter initialized. Cascade: Gemini → OpenAI → Zhipu → OpenRouter → Ollama")
 
-    # Инициализация модуля мышления и саморазвития Джарвиса
     jarvis_mind = JarvisMind(ai_router=router, plugins_dir="/app/modules/plugins")
     logger.info("[Main] JarvisMind (Ядро саморазвития) успешно запущено.")
 
@@ -77,52 +63,50 @@ async def main():
     await pool.start()
     logger.info("[Main] WorkerPool started with 3 workers.")
 
-    # Инициализируем ЕДИНСТВЕННЫЙ экземпляр Bot для всего приложения
-    bot_token = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
-    if not bot_token:
-        raise ValueError("Критическая ошибка: Переменная BOT_TOKEN или TELEGRAM_BOT_TOKEN не задана в окружении.")
-    
-    shared_bot = Bot(token=bot_token)
+    # --- ИЗОЛИРОВАННЫЙ ПЛАНИРОВЩИК ИМПЕРИИ КАНАЛОВ ---
     empire_router = None
-
-    # --- ИНТЕГРАЦИЯ ПЛАНИРОВЩИКА СЕТИ КАНАЛОВ ---
-    try:
+    # Для фонового постинга берем BOT_TOKEN, если он есть. Если его нет — берем TELEGRAM_BOT_TOKEN
+    target_token = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
+    
+    if target_token:
         try:
-            from modules.plugins.network_empire import NetworkEmpireManager, router as config_router
-        except ModuleNotFoundError:
             try:
-                from jarvis_omega.modules.plugins.network_empire import NetworkEmpireManager, router as config_router
+                from modules.plugins.network_empire import NetworkEmpireManager, router as config_router
             except ModuleNotFoundError:
-                from plugins.network_empire import NetworkEmpireManager, router as config_router
-        
-        empire_router = config_router
-        # Передаем нашего единого shared_bot в менеджер империи
-        empire_manager = NetworkEmpireManager(shared_bot)
-        
-        async def auto_post_scheduler():
-            logger.info("[Main-Scheduler] Фоновый таймер сети каналов успешно запущен.")
-            # Даем системе 3 минуты (180 сек) на прогрев
-            await asyncio.sleep(180)
-            while True:
                 try:
-                    logger.info("[Main-Scheduler] Время публикации. Будим парсер...")
-                    await empire_manager.auto_post_cycle()
-                except Exception as ex:
-                    logger.error(f"[Main-Scheduler Ошибка] Сбой в цикле автопостинга: {ex}")
+                    from jarvis_omega.modules.plugins.network_empire import NetworkEmpireManager, router as config_router
+                except ModuleNotFoundError:
+                    from plugins.network_empire import NetworkEmpireManager, router as config_router
+            
+            empire_router = config_router
+            
+            # Локальная функция-планировщик, которая сама создаст и закроет сессию бота внутри себя
+            async def auto_post_scheduler(token):
+                from aiogram import Bot
+                logger.info("[Main-Scheduler] Фоновый таймер сети каналов ожидает 3 минуты перед стартом...")
+                await asyncio.sleep(180)
+                logger.info("[Main-Scheduler] Фоновый таймер сети каналов запущен.")
                 
-                # Интервал — раз в 3 часа
-                await asyncio.sleep(3 * 3600)
-        
-        asyncio.create_task(auto_post_scheduler(), name="network-empire-scheduler")
-        logger.info("[Main] Задача планировщика автопостинга добавлена в асинхронный пул.")
-        
-    except Exception as plugin_err:
-        logger.error(f"[Main] Не удалось запустить планировщик каналов: {plugin_err}")
-    # --------------------------------------------
+                while True:
+                    try:
+                        # Создаем бота только на момент выполнения транзакции постинга
+                        async with Bot(token=token) as shadow_bot:
+                            empire_manager = NetworkEmpireManager(shadow_bot)
+                            logger.info("[Main-Scheduler] Время публикации. Будим парсер...")
+                            await empire_manager.auto_post_cycle()
+                    except Exception as ex:
+                        logger.error(f"[Main-Scheduler Ошибка] Сбой в цикле автопостинга: {ex}")
+                    await asyncio.sleep(3 * 3600)
+            
+            asyncio.create_task(auto_post_scheduler(target_token), name="network-empire-scheduler")
+            logger.info("[Main] Задача планировщика автопостинга добавлена в асинхронный пул.")
+            
+        except Exception as plugin_err:
+            logger.error(f"[Main] Не удалось запустить планировщик каналов: {plugin_err}")
+    # -------------------------------------------------
 
-    # Передаем shared_bot и роутер внутрь таски телеграм-бота
     bot_task = asyncio.create_task(
-        start_bot(brain, pool=pool, notifier=notifier, jarvis_mind=jarvis_mind, empire_router=empire_router, bot_instance=shared_bot), 
+        start_bot(brain, pool=pool, notifier=notifier, jarvis_mind=jarvis_mind, empire_router=empire_router), 
         name="telegram-bot"
     )
     server_task = asyncio.create_task(
@@ -140,8 +124,6 @@ async def main():
         raise
     finally:
         await pool.stop()
-        await shared_bot.session.close()
-        logger.info("[Main] Единая сессия Bot успешно закрыта при выходе.")
         logger.info("[Main] WorkerPool stopped on exit.")
 
 
