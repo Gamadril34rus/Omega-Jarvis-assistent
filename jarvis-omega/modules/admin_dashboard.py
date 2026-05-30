@@ -1,7 +1,7 @@
 import logging
 import os
 import time
-import html  # Добавили для безопасного экранирования HTML-разметки
+import html  # Для безопасного экранирования HTML-разметки
 
 from aiogram.filters import Command
 from aiogram.types import Message
@@ -216,19 +216,21 @@ def create_admin_router(brain, pool=None, notifier=None, jarvis_mind=None):
 
 async def start_bot(brain, pool=None, notifier=None, jarvis_mind=None, empire_router=None):
     from aiogram import Bot, Dispatcher
+    from aiogram.fsm.storage.memory import MemoryStorage
 
-    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    # Синхронизируем токены, проверяя оба возможных ключа в окружении
+    token = os.getenv("BOT_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN")
     if not token:
-        raise ValueError("TELEGRAM_BOT_TOKEN is not set in environment.")
+        raise ValueError("Ни BOT_TOKEN, ни TELEGRAM_BOT_TOKEN не заданы в переменных окружения.")
 
     bot = Bot(token=token)
-    dp = Dispatcher()
+    dp = Dispatcher(storage=MemoryStorage())
     
     # Подключаем роутер админки
     dp.include_router(create_admin_router(brain, pool=pool, notifier=notifier, jarvis_mind=jarvis_mind))
     logger.info("[Admin] Роутер админки успешно подключен.")
 
-    # Если передан роутер империи каналов — жестко вшиваем его в диспетчер
+    # Если передан роутер империи каналов — жестко вшиваем его в этот же единственный диспетчер
     if empire_router:
         dp.include_router(empire_router)
         logger.info("[Admin] Роутер империи сетевых каналов ЖЕСТКО внедрен в Диспетчер.")
@@ -236,4 +238,11 @@ async def start_bot(brain, pool=None, notifier=None, jarvis_mind=None, empire_ro
         logger.warning("[Admin] Роутер империи каналов отсутствует в параметрах запуска.")
 
     logger.info("[Admin] Starting Telegram bot polling...")
-    await dp.start_polling(bot)
+    try:
+        # Дропаем старые зависшие апдейты, чтобы избежать конфликтов при перезапуске
+        await bot.delete_webhook(drop_pending_updates=True)
+        await dp.start_polling(bot)
+    except Exception as e:
+        logger.exception(f"[Admin] Критическая ошибка при поллинге бота: {e}")
+    finally:
+        await bot.session.close()
