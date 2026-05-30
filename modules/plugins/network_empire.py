@@ -8,7 +8,8 @@ from aiogram import Router, F, Bot
 from aiogram.types import Message, LabeledPrice, PreCheckoutQuery, InlineKeyboardMarkup, InlineKeyboardButton, FSInputFile
 from aiogram.filters import Command
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth  # Исправленный чистый импорт
+# ИСПРАВЛЕНО: Для асинхронного Playwright импортируем правильную функцию stealth_async
+from playwright_stealth import stealth_async  
 from groq import AsyncGroq
 
 logger = logging.getLogger("jarvis.network_empire")
@@ -132,7 +133,8 @@ class NetworkEmpireManager:
             )
             
             page = await context.new_page()
-            await stealth(page)  # Внедрение маскировки под реального пользователя
+            # ИСПРАВЛЕНО: Вызов корректной асинхронной функции маскировки
+            await stealth_async(page)  
 
             for chan_key, config in CHANNELS.items():
                 if not config["id"]:
@@ -175,7 +177,7 @@ class NetworkEmpireManager:
                         conn = sqlite3.connect(DB_PATH)
                         cur = conn.cursor()
                         cur.execute("INSERT OR REPLACE INTO products VALUES (?, ?, ?, ?, ?, ?)",
-                                    (prod_id, chan_key, raw_title, raw_price, f"Официальный лот на {config['url']}", full_link))
+                                    (prod_id, chan_key, raw_title, raw_price, f"Official lot on {config['url']}", full_link))
                         conn.commit()
                         conn.close()
 
@@ -230,7 +232,8 @@ class NetworkEmpireManager:
                 timezone_id="Europe/Moscow"
             )
             page = await context.new_page()
-            await stealth(page)
+            # ИСПРАВЛЕНО: Вызов корректной асинхронной функции маскировки
+            await stealth_async(page)
 
             for chan_key, config in CHANNELS.items():
                 if not config["id"]:
