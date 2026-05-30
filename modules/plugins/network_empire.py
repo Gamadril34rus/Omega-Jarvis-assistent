@@ -7,6 +7,7 @@ from pathlib import Path
 from datetime import datetime
 from playwright.async_api import async_playwright
 from groq import AsyncGroq
+from aiogram import Router  # Подключаем родной роутер aiogram
 
 # --- АВТОНОМНЫЙ ИСПРАВЛЕННЫЙ ИМПОРТ STEALTH-ПАКЕТА ---
 try:
@@ -25,16 +26,8 @@ except ImportError:
 logger = logging.getLogger("jarvis.plugins.network_empire")
 DB_PATH = "network_empire.db"
 
-# Автономный роутер, чтобы импорт `router as config_router` в main.py проходил успешно
-class MockRouter:
-    def __init__(self):
-        self.routes = {}
-    def message(self, *args, **kwargs):
-        def decorator(func):
-            return func
-        return decorator
-
-router = MockRouter()
+# Инициализируем настоящий роутер, чтобы dp.include_router() в диспетчере успешно прошёл валидацию
+router = Router()
 
 class NetworkEmpireManager:
     def __init__(self, bot=None, groq_client=None):
@@ -196,7 +189,7 @@ class NetworkEmpireManager:
             # Передаем данные в Groq для рерайта под стиль канала
             post_text = await self.generate_post_text(deal["title"], f"Ссылка на скидку: {deal['link']}", category)
             
-            # Логика отправки в Telegram (раскомментировать при передаче живого инстанса bot)
+            # Логика отправки в Telegram
             if self.bot:
                 try:
                     # await self.bot.send_message(chat_id=channel_id, text=post_text, parse_mode="Markdown")
